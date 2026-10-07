@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NFT Gym - CRM Portal</title>
+    <link rel="stylesheet" href="/style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+      .layout-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+      .header-nav { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 15px 0; margin-bottom: 25px; }
+      .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 15px; margin-bottom: 25px; }
+      .stat-card { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 20px; }
+      .stat-val { font-size: 28px; font-weight: 800; font-family: var(--font-display); margin-top: 5px; }
+      .controls-bar { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: center; justify-content: space-between; }
+      .search-box { flex: 1; min-width: 260px; }
+      .tab-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-muted); cursor: pointer; font-size: 13px; font-weight: 600; }
+      .tab-btn.active { background: var(--primary-green); color: #000; border-color: var(--primary-green); }
+      .nav-links { display: flex; gap: 8px; align-items: center; }
+      .hidden { display: none !important; }
+      .logo-text { font-family: var(--font-display); font-size: 22px; font-weight: 800; color: var(--primary-green); }
+      .logo-text span { color: #fff; }
+    </style>
+  </head>
+  <body>
+    <div class="layout-container">
+      
+      <!-- HEADER -->
+      <header class="header-nav">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <svg width="45" height="30" viewBox="0 0 280 140" fill="none">
+            <rect x="14" y="44" width="18" height="52" rx="4" fill="#22c55e" />
+            <rect x="36" y="32" width="18" height="76" rx="4" fill="#22c55e" />
+            <rect x="58" y="20" width="20" height="100" rx="4" fill="#22c55e" />
+            <rect x="82" y="10" width="20" height="120" rx="4" fill="#22c55e" />
+            <path d="M 106 70 L 114 70 L 119 32 L 125 106 L 132 50 L 138 90 L 145 24 L 152 114 L 158 58 L 164 70 L 172 70" stroke="#22c55e" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+            <rect x="172" y="10" width="20" height="120" rx="4" fill="#22c55e" />
+            <rect x="196" y="20" width="20" height="100" rx="4" fill="#22c55e" />
+            <rect x="220" y="32" width="18" height="76" rx="4" fill="#22c55e" />
+            <rect x="242" y="44" width="18" height="52" rx="4" fill="#22c55e" />
+          </svg>
+          <div class="logo-text">NFT <span>GYM</span> <small style="font-size: 11px; letter-spacing: 2px; display: block; color: var(--text-muted)">CRM PORTAL</small></div>
+        </div>
+
+        <div class="nav-links">
+          <button class="tab-btn active" id="tab-members-btn" onclick="switchView('members')">Member List</button>
+          <button class="tab-btn" id="tab-register-btn" onclick="switchView('register')">+ New Registration</button>
+          <a href="/" class="btn-secondary" style="padding: 8px 14px; font-size: 13px;">Public Site</a>
+        </div>
+      </header>
+
+      <!-- STATS BAR -->
+      <div class="stats-grid">
+        <div class="stat-card" style="border-left: 3px solid #6b7280;">
+          <div style="font-size: 12px; color: var(--text-muted); text-transform: uppercase;">Total Members</div>
+          <div class="stat-val" id="stat-total">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--status-active);">
+          <div style="font-size: 12px; color: var(--status-active); text-transform: uppercase;">Active (&gt; 30 Days)</div>
+          <div class="stat-val" style="color: var(--status-active);" id="stat-active">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--status-expiring);">
+          <div style="font-size: 12px; color: var(--status-expiring); text-transform: uppercase;">Expiring Soon (&lt; 30 Days)</div>
+          <div class="stat-val" style="color: var(--status-expiring);" id="stat-expiring">0</div>
+        </div>
+        <div class="stat-card" style="border-left: 3px solid var(--status-expired);">
+          <div style="font-size: 12px; color: var(--status-expired); text-transform: uppercase;">Expired</div>
+          <div class="stat-val" style="color: var(--status-expired);" id="stat-expired">0</div>
+        </div>
+      </div>
+
+      <!-- VIEW 1: MEMBER LIST & EXPIRY TRACKING -->
+      <section id="view-members">
+        <div class="controls-bar">
+          <div class="search-box">
+            <input type="text" id="search-input" class="form-input" placeholder="Search by name or mobile number..." oninput="handleSearch(this.value)" />
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <select id="status-filter" class="form-select" style="width: auto;" onchange="handleFilter(this.value)">
+              <option value="all">All Statuses</option>
+              <option value="active">Active Only</option>
+              <option value="expiring">Expiring Soon</option>
+              <option value="expired">Expired</option>
+            </select>
+            <button class="btn-secondary" onclick="loadMembers()">Refresh</button>
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>Member Name</th>
+                <th>Mobile Number</th>
+                <th>Plan Type</th>
+                <th>Start Date</th>
+                <th>Expiry Date</th>
+                <th>Status</th>
+                <th style="text-align: right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="members-table-body">
+              <tr>
+                <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-muted);">
+                  Loading member database...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VIEW 2: NEW REGISTRATION FORM -->
+      <section id="view-register" class="hidden">
+        <div class="card" style="max-width: 650px; margin: 0 auto;">
+          <h2 style="margin-bottom: 5px; font-family: var(--font-display);">Register New Member</h2>
+          <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 20px;">
+            Save candidate to database and automatically compute expiry date.
+          </p>
+
+          <form id="registration-form" onsubmit="handleRegister(event)">
+            <div class="form-group">
+              <label class="form-label">Candidate Name *</label>
+              <input type="text" id="reg-name" required class="form-input" placeholder="e.g. John Miller" />
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+              <div class="form-group">
+                <label class="form-label">Mobile Number *</label>
+                <input type="tel" id="reg-mobile" required class="form-input" placeholder="+1 (555) 000-0000" />
+              </div>
+              <div class="form-group">
+                <label class="form-label">Plan Duration *</label>
+                <select id="reg-plan" class="form-select" onchange="updateCalculatedExpiry()">
+                  <option value="Monthly">Monthly (1 Month)</option>
+                  <option value="Quarterly">Quarterly (3 Months)</option>
+                  <option value="Six Months">Six Months (6 Months)</option>
+                  <option value="Yearly">Yearly (1 Year)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Date of Plan Active *</label>
+              <input type="date" id="reg-start-date" required class="form-input" onchange="updateCalculatedExpiry()" />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Address</label>
+              <textarea id="reg-address" rows="3" class="form-textarea" placeholder="Street address or locality..."></textarea>
+            </div>
+
+            <div style="background: var(--bg-input); border: 1px solid var(--border-subtle); padding: 15px; border-radius: 10px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: bold;">Auto-Calculated Expiry Date</div>
+                <div id="calc-expiry-preview" style="font-size: 16px; font-weight: bold; color: var(--primary-green); font-family: monospace; margin-top: 3px;">--</div>
+              </div>
+              <small style="color: var(--text-muted)">Based on selected plan</small>
+            </div>
+
+            <button type="submit" class="btn-primary" style="width: 100%; justify-content: center; padding: 12px;">
+              Save Member to SQL Database
+            </button>
+          </form>
+        </div>
+      </section>
+
+    </div>
+
+    <!-- Client-side script -->
+    <script>
+      let currentMembers = [];
+      const today = new Date().toISOString().split('T')[0];
+      document.getElementById('reg-start-date').value = today;
+
+      function formatToDMY(dateInput) {
+        if (!dateInput) return '';
+        const str = String(dateInput).trim();
+        if (!str) return '';
+        if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(str)) {
+          const parts = str.split('-');
+          return `${parts[0].padStart(2, '0')}-${parts[1].padStart(2, '0')}-${parts[2]}`;
+        }
+        if (/^\d{4}-\d{1,2}-\d{1,2}/.test(str)) {
+          const ymd = str.split('T')[0].split('-');
+          return `${ymd[2].padStart(2, '0')}-${ymd[1].padStart(2, '0')}-${ymd[0]}`;
+        }
+        try {
+          const d = new Date(str);
+          if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const year = d.getFullYear();
+            return `${day}-${month}-${year}`;
+          }
+        } catch {}
+        return str;
+      }
+
+      function updateCalculatedExpiry() {
+        const start = document.getElementById('reg-start-date').value;
+        const plan = document.getElementById('reg-plan').value;
+        if (!start) return;
+
+        const parts = start.split('-');
+        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+
+        if (plan === 'Monthly') d.setMonth(d.getMonth() + 1);
+        else if (plan === 'Quarterly') d.setMonth(d.getMonth() + 3);
+        else if (plan === 'Six Months') d.setMonth(d.getMonth() + 6);
+        else if (plan === 'Yearly') d.setFullYear(d.getFullYear() + 1);
+
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        document.getElementById('calc-expiry-preview').innerText = `${dd}-${mm}-${yyyy}`;
+      }
+      updateCalculatedExpiry();
+
+      function switchView(view) {
+        document.getElementById('tab-members-btn').classList.toggle('active', view === 'members');
+        document.getElementById('tab-register-btn').classList.toggle('active', view === 'register');
+        document.getElementById('view-members').classList.toggle('hidden', view !== 'members');
+        document.getElementById('view-register').classList.toggle('hidden', view !== 'register');
+      }
+
+      async function loadMembers() {
+        try {
+          const q = document.getElementById('search-input').value;
+          const status = document.getElementById('status-filter').value;
+          const res = await fetch(`/api/members?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`);
+          const data = await res.json();
+          currentMembers = data.members || [];
+          renderTable(currentMembers);
+
+          const statsRes = await fetch('/api/stats');
+          const stats = await statsRes.json();
+          document.getElementById('stat-total').innerText = stats.total;
+          document.getElementById('stat-active').innerText = stats.active;
+          document.getElementById('stat-expiring').innerText = stats.expiring;
+          document.getElementById('stat-expired').innerText = stats.expired;
+        } catch (e) {
+          console.error('Failed loading members', e);
+        }
+      }
+
+      function renderTable(members) {
+        const tbody = document.getElementById('members-table-body');
+        if (members.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 30px; color: var(--text-muted);">No members found.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = members.map(m => {
+          let badgeClass = 'badge-active';
+          let badgeText = `Active (${m.days_remaining}d)`;
+          if (m.status === 'expiring') {
+            badgeClass = 'badge-expiring';
+            badgeText = `Expiring (${m.days_remaining}d)`;
+          } else if (m.status === 'expired') {
+            badgeClass = 'badge-expired';
+            badgeText = `Expired (${Math.abs(m.days_remaining)}d ago)`;
+          }
+
+          return `
+            <tr>
+              <td><strong>${escapeHtml(m.name)}</strong></td>
+              <td style="font-family: monospace;">${escapeHtml(m.mobile)}</td>
+              <td><span style="background: var(--border-subtle); padding: 3px 8px; border-radius: 4px; font-size: 11px;">${m.plan_type}</span></td>
+              <td style="color: var(--text-muted); font-size: 12px;">${formatToDMY(m.start_date)}</td>
+              <td style="font-weight: bold; font-size: 12px;">${formatToDMY(m.expiry_date)}</td>
+              <td><span class="${badgeClass}">${badgeText}</span></td>
+              <td style="text-align: right;">
+                <button onclick="sendReminder(${m.id})" class="btn-secondary" style="padding: 4px 8px; font-size: 11px; margin-right: 4px;">Reminder</button>
+                <button onclick="deleteMember(${m.id})" class="btn-secondary" style="padding: 4px 8px; font-size: 11px; color: #ef4444;">Delete</button>
+              </td>
+            </tr>
+          `;
+        }).join('');
+      }
+
+      function escapeHtml(str) {
+        return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function handleSearch(val) {
+        loadMembers();
+      }
+
+      function handleFilter(val) {
+        loadMembers();
+      }
+
+      async function handleRegister(e) {
+        e.preventDefault();
+        const name = document.getElementById('reg-name').value;
+        const mobile = document.getElementById('reg-mobile').value;
+        const plan_type = document.getElementById('reg-plan').value;
+        const start_date = document.getElementById('reg-start-date').value;
+        const address = document.getElementById('reg-address').value;
+
+        try {
+          const res = await fetch('/api/members', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, mobile, plan_type, start_date, address }),
+          });
+          const data = await res.json();
+          if (data.success) {
+            alert(`Member ${data.member.name} enrolled with expiry on ${formatToDMY(data.member.expiry_date)}!`);
+            document.getElementById('registration-form').reset();
+            document.getElementById('reg-start-date').value = today;
+            updateCalculatedExpiry();
+            switchView('members');
+            loadMembers();
+          } else {
+            alert(data.error || 'Registration failed');
+          }
+        } catch (err) {
+          alert('Network or server error');
+        }
+      }
+
+      async function deleteMember(id) {
+        if (!confirm('Are you sure you want to delete this member?')) return;
+        await fetch(`/api/members/${id}`, { method: 'DELETE' });
+        loadMembers();
+      }
+
+      function sendReminder(id) {
+        const m = currentMembers.find(x => x.id === id);
+        if (!m) return;
+        const msg = `Hi ${m.name}! Friendly reminder from NFT Gym: Your ${m.plan_type} membership expires on ${formatToDMY(m.expiry_date)}. Please contact us to renew! - BE AN INSPIRATION`;
+        const waUrl = `https://wa.me/${m.mobile.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl, '_blank');
+      }
+
+      // Initial load
+      loadMembers();
+    </script>
+  </body>
+</html>

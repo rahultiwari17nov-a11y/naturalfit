@@ -1,0 +1,202 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600" width="100%" height="100%">
+  <defs>
+    <!-- Soft glow behind Hindi text -->
+    <filter id="yellowGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <!-- Brush stroke styles -->
+    <linearGradient id="pinkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ff1493" />
+      <stop offset="100%" stop-color="#e91e63" />
+    </linearGradient>
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f0ff" />
+      <stop offset="100%" stop-color="#0099ff" />
+    </linearGradient>
+    <linearGradient id="yellowGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fff000" />
+      <stop offset="100%" stop-color="#ffb700" />
+    </linearGradient>
+    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#76ff03" />
+      <stop offset="100%" stop-color="#00e676" />
+    </linearGradient>
+  </defs>
+
+  <!-- Solid Black Background -->
+  <rect width="600" height="600" fill="#000000" />
+
+  <!-- Outer Angled Wireframe Boxes Behind Card -->
+  <!-- Cyan Box -->
+  <rect x="105" y="90" width="380" height="390" fill="none" stroke="#00e5ff" stroke-width="2.5" opacity="0.9" transform="rotate(-3 295 285)" />
+  <!-- Yellow Box -->
+  <rect x="110" y="85" width="375" height="395" fill="none" stroke="#ffd600" stroke-width="2" opacity="0.9" transform="rotate(4 295 285)" />
+  <!-- Magenta Box -->
+  <rect x="115" y="95" width="370" height="385" fill="none" stroke="#ff007f" stroke-width="2" opacity="0.85" transform="rotate(-6 295 285)" />
+
+  <!-- Painterly Splatters & Colorful Strokes Around Outer Borders -->
+  <!-- TOP-RIGHT SPLASHES -->
+  <path d="M 280 80 Q 380 30 480 75 Q 430 110 350 95 Z" fill="#00e5ff" />
+  <path d="M 330 65 Q 430 20 520 85 Q 470 125 400 90 Z" fill="#ff007f" />
+  <path d="M 390 55 Q 470 35 510 110 Q 450 130 420 85 Z" fill="#ffee00" />
+  <path d="M 450 80 Q 530 65 545 130 Q 490 145 460 110 Z" fill="#76ff03" />
+  <path d="M 470 110 L 530 80 L 525 150 Z" fill="#00b0ff" />
+  <circle cx="450" cy="85" r="14" fill="#ffee00" />
+  <circle cx="510" cy="115" r="10" fill="#00e5ff" />
+  <circle cx="445" cy="50" r="8" fill="#76ff03" />
+
+  <!-- RIGHT EDGE SPLASHES -->
+  <path d="M 480 180 Q 560 210 520 290 Q 475 250 485 200 Z" fill="#ffee00" />
+  <path d="M 490 230 Q 575 260 550 340 Q 480 320 495 260 Z" fill="#76ff03" />
+  <path d="M 485 300 Q 570 330 535 410 Q 470 380 490 330 Z" fill="#00e5ff" />
+  <circle cx="535" cy="370" r="14" fill="#ff007f" />
+  <circle cx="555" cy="245" r="9" fill="#00e5ff" />
+
+  <!-- BOTTOM SPLASHES (Vibrant Pink & Multi-color) -->
+  <path d="M 120 480 Q 230 570 380 540 Q 310 470 200 485 Z" fill="#ff007f" />
+  <path d="M 220 490 Q 320 590 480 530 Q 410 470 300 490 Z" fill="#e91e63" />
+  <path d="M 330 500 Q 420 585 525 510 Q 460 460 380 490 Z" fill="#ff2d87" />
+  <path d="M 170 510 Q 250 580 340 545 Q 280 500 220 510 Z" fill="#00e5ff" />
+  <path d="M 380 515 Q 450 575 510 535 Q 460 490 420 505 Z" fill="#ffee00" />
+  <path d="M 440 510 Q 490 560 535 520 Z" fill="#76ff03" />
+  <circle cx="160" cy="515" r="11" fill="#ff007f" />
+  <circle cx="370" cy="555" r="15" fill="#ffee00" />
+  <circle cx="490" cy="530" r="10" fill="#00e5ff" />
+  <circle cx="280" cy="550" r="9" fill="#76ff03" />
+
+  <!-- LEFT SPLASHES -->
+  <path d="M 110 360 Q 35 400 70 480 Q 120 440 105 390 Z" fill="#ff007f" />
+  <path d="M 115 280 Q 40 310 65 385 Q 115 360 110 310 Z" fill="#00e5ff" />
+  <path d="M 110 190 Q 30 220 60 295 Q 115 270 105 220 Z" fill="#ffee00" />
+  <path d="M 115 130 Q 55 120 75 190 Q 115 180 110 145 Z" fill="#76ff03" />
+  <circle cx="70" cy="225" r="13" fill="#ffee00" />
+  <circle cx="95" cy="135" r="10" fill="#ff007f" />
+  <circle cx="75" cy="455" r="12" fill="#ffee00" />
+
+  <!-- Central White Card -->
+  <!-- Outer White Frame Border -->
+  <rect x="110" y="110" width="380" height="380" fill="#ffffff" stroke="#ffffff" stroke-width="8" rx="3" />
+  <!-- Inner Thin Black Outline -->
+  <rect x="118" y="118" width="364" height="364" fill="#ffffff" stroke="#18181b" stroke-width="3" />
+
+  <!-- ================= CARTOON BOY WITH MORTARBOARD ================= -->
+  <g id="character" transform="translate(10, -5)">
+    <!-- BOY FACE & HEAD -->
+    <!-- Ears -->
+    <ellipse cx="230" cy="290" rx="14" ry="18" fill="#fbcfe8" stroke="#1e293b" stroke-width="4" />
+    <ellipse cx="350" cy="290" rx="14" ry="18" fill="#fbcfe8" stroke="#1e293b" stroke-width="4" />
+
+    <!-- Face Oval -->
+    <path d="M 235 250 C 230 330 250 365 290 365 C 330 365 350 330 345 250 Z" fill="#fed7aa" stroke="#1e293b" stroke-width="4.5" stroke-linejoin="round" />
+
+    <!-- Hair (Sides and Forehead under cap) -->
+    <path d="M 236 255 C 235 235 250 225 290 225 C 330 225 345 235 344 255 C 338 250 325 258 310 248 C 290 260 270 248 255 258 Z" fill="#9a3412" stroke="#1e293b" stroke-width="4" />
+
+    <!-- NOSE & MOUTH -->
+    <!-- Nose line -->
+    <path d="M 287 312 Q 292 318 296 314" fill="none" stroke="#ea580c" stroke-width="3.5" stroke-linecap="round" />
+    <!-- Smile -->
+    <path d="M 276 332 Q 290 344 304 332" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round" />
+
+    <!-- EYEBROWS -->
+    <path d="M 248 260 Q 262 254 274 260" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round" />
+    <path d="M 306 260 Q 318 254 332 260" fill="none" stroke="#1e293b" stroke-width="4" stroke-linecap="round" />
+
+    <!-- EYEGLASSES (Prominent Navy/Black Rectangular Frames) -->
+    <!-- Left Frame -->
+    <rect x="238" y="266" width="46" height="42" rx="9" fill="#ffffff" stroke="#1e3a8a" stroke-width="5.5" />
+    <!-- Right Frame -->
+    <rect x="296" y="266" width="46" height="42" rx="9" fill="#ffffff" stroke="#1e3a8a" stroke-width="5.5" />
+    <!-- Frame Bridge -->
+    <path d="M 284 286 L 296 286" fill="none" stroke="#1e3a8a" stroke-width="6" stroke-linecap="round" />
+    <!-- Left temple -->
+    <path d="M 238 284 L 228 281" fill="none" stroke="#1e3a8a" stroke-width="5" stroke-linecap="round" />
+    <!-- Right temple -->
+    <path d="M 342 284 L 352 281" fill="none" stroke="#1e3a8a" stroke-width="5" stroke-linecap="round" />
+
+    <!-- EYES INSIDE GLASSES (Big, friendly cartoon eyes) -->
+    <!-- Left Eye Pupil -->
+    <ellipse cx="261" cy="287" rx="10" ry="12" fill="#0f172a" />
+    <circle cx="258" cy="283" r="4.5" fill="#ffffff" />
+    <circle cx="265" cy="292" r="2.2" fill="#ffffff" />
+    <!-- Right Eye Pupil -->
+    <ellipse cx="319" cy="287" rx="10" ry="12" fill="#0f172a" />
+    <circle cx="316" cy="283" r="4.5" fill="#ffffff" />
+    <circle cx="323" cy="292" r="2.2" fill="#ffffff" />
+
+    <!-- GRADUATION CAP (MORTARBOARD) -->
+    <!-- Cap Skull Base / Cap band -->
+    <path d="M 248 226 C 248 245 332 245 332 226 Z" fill="#1e3a8a" stroke="#0f172a" stroke-width="4.5" />
+    <!-- Mortarboard Diamond Top -->
+    <polygon points="290,150 372,192 290,230 208,192" fill="#1d4ed8" stroke="#0f172a" stroke-width="5" stroke-linejoin="round" />
+    <!-- Darker under-edge of mortarboard -->
+    <polygon points="208,192 290,230 372,192 372,198 290,236 208,198" fill="#1e3a8a" stroke="#0f172a" stroke-width="3" />
+
+    <!-- Cap Button on top center -->
+    <circle cx="290" cy="189" r="6" fill="#172554" />
+
+    <!-- Tassel Hanging to the Right -->
+    <path d="M 290 189 Q 345 195 356 242" fill="none" stroke="#1e3a8a" stroke-width="4.5" stroke-linecap="round" />
+    <!-- Tassel connector band -->
+    <ellipse cx="356" cy="244" rx="4" ry="2" fill="#0f172a" />
+    <!-- Tassel Fringe Bundle -->
+    <path d="M 353 245 L 350 278 L 362 278 L 359 245 Z" fill="#1d4ed8" stroke="#0f172a" stroke-width="3" stroke-linejoin="round" />
+  </g>
+
+  <!-- ================= HINDI TYPOGRAPHY: बाल स्याही ================= -->
+  <!-- Soft warm yellow brush glow behind Hindi text -->
+  <ellipse cx="300" cy="426" rx="145" ry="22" fill="#fef08a" opacity="0.9" filter="url(#yellowGlow)" />
+
+  <!-- Beautiful, authentic Devanagari vector lettering for "बाल स्याही" -->
+  <g id="hindi-text" fill="#111827" stroke="#111827">
+    <!-- SHIROREKHA (Headline bar over "बाल") -->
+    <rect x="175" y="405" width="98" height="6.5" rx="2" />
+    <!-- SHIROREKHA (Headline bar over "स्याही") -->
+    <rect x="285" y="405" width="138" height="6.5" rx="2" />
+
+    <!-- LETTER: बा (Baa) -->
+    <!-- Vertical stem -->
+    <rect x="222" y="407" width="6.5" height="38" rx="2" />
+    <!-- Left loop of ब -->
+    <path d="M 223 416 C 200 416 194 435 223 435 Z" fill="#111827" stroke-width="0" />
+    <path d="M 223 420 C 210 420 205 431 223 431 Z" fill="#ffffff" stroke-width="0" />
+    <!-- Diagonal stroke inside ब loop -->
+    <line x1="208" y1="421" x2="220" y2="430" stroke="#111827" stroke-width="4" stroke-linecap="round" />
+    <!-- Aa-ki-matra vertical stem (ा) -->
+    <rect x="237" y="407" width="6.5" height="38" rx="2" />
+
+    <!-- LETTER: ल (La) -->
+    <!-- Vertical stem -->
+    <rect x="264" y="407" width="6.5" height="38" rx="2" />
+    <!-- Double loop of ल -->
+    <path d="M 248 438 C 248 424 259 423 264 429" fill="none" stroke-width="6" stroke-linecap="round" />
+    <path d="M 256 427 C 256 421 262 417 265 423" fill="none" stroke-width="5" stroke-linecap="round" />
+
+    <!-- LETTER: स्या (Syaa) -->
+    <!-- Half-Sa (स्) -->
+    <path d="M 305 417 C 291 417 290 427 298 431 C 305 435 301 445 294 445" fill="none" stroke-width="5.5" stroke-linecap="round" />
+    <line x1="298" y1="429" x2="310" y2="429" stroke-width="5.5" stroke-linecap="round" />
+    <!-- Ya (य) joined with stem -->
+    <path d="M 310 422 C 310 432 316 438 326 438 C 333 438 335 433 336 428" fill="none" stroke-width="5.5" stroke-linecap="round" />
+    <!-- Stem for य -->
+    <rect x="334" y="407" width="6.5" height="38" rx="2" />
+    <!-- Aa-matra stem (ा) -->
+    <rect x="349" y="407" width="6.5" height="38" rx="2" />
+
+    <!-- LETTER: ही (Hee) -->
+    <!-- Ha (ह) -->
+    <path d="M 373 408 L 373 415 C 373 422 364 421 364 427 C 364 433 376 432 376 441 C 376 446 369 448 365 447" fill="none" stroke-width="5.5" stroke-linecap="round" />
+    <!-- Loop/hook on ह -->
+    <path d="M 368 433 C 372 435 375 439 373 444" fill="none" stroke-width="4.5" stroke-linecap="round" />
+    <!-- Badi-Ee matra (ी) -->
+    <!-- Top arch curve starting from behind and curving over to right stem -->
+    <path d="M 374 406 C 374 388 395 388 395 406" fill="none" stroke-width="5.5" stroke-linecap="round" />
+    <!-- Vertical right stem of ी -->
+    <rect x="392" y="407" width="6.5" height="38" rx="2" />
+  </g>
+</svg>
