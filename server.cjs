@@ -1357,18 +1357,27 @@ async function startServer() {
       try {
         const sb = getSupabaseServerClient();
         if (sb) {
-          sb.from("attendance").insert([{
-            member_id: member.id,
-            status: "valid",
-            check_in_time: now.toISOString(),
-            reception_notes: notes || "Front desk verification"
-          }]).then(({ error: sbErr }) => {
+          (async () => {
+            let sbMemId = member.id;
+            try {
+              const memCode = String(member.member_id || member.card_uid || member.id);
+              const { data: sbm } = await sb.from("members").select("id").or(`member_id.eq.${memCode},mobile.eq.${member.mobile},id.eq.${member.id}`).limit(1);
+              if (sbm && sbm.length > 0) {
+                sbMemId = sbm[0].id;
+              }
+            } catch (_) {}
+            const { error: sbErr } = await sb.from("attendance").insert([{
+              member_id: sbMemId,
+              status: "valid",
+              check_in_time: now.toISOString(),
+              reception_notes: notes || "Front desk verification"
+            }]);
             if (sbErr) {
               console.warn("[Supabase Attendance Sync Note]:", sbErr.message);
             } else {
-              console.log("[Supabase Attendance Sync Success]: Record saved to Supabase attendance table.");
+              console.log("[Supabase Attendance Sync Success]: Record saved to Supabase attendance table for member", sbMemId);
             }
-          }).catch(e => console.warn("[Supabase Attendance Sync Error]:", e.message));
+          })().catch(e => console.warn("[Supabase Attendance Sync Error]:", e.message));
         }
       } catch (err) {
         console.warn("Supabase background attendance sync exception:", err);

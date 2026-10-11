@@ -732,6 +732,23 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
     if (!rawIdentifier || !String(rawIdentifier).trim()) return;
     const identifier = String(rawIdentifier).trim();
 
+    // Direct Supabase mode on Netlify or static hosting
+    const isNetlifyOrStatic = typeof window !== 'undefined' && (
+      window.location.hostname.includes("netlify") ||
+      window.location.hostname.includes("github.io") ||
+      window.location.hostname.includes("vercel") ||
+      (window.location.hostname.endsWith(".app") && !window.location.hostname.includes("run.app"))
+    );
+    if (isNetlifyOrStatic) {
+      const localMemberForNetlify = (allMembersList || []).find(m => 
+        String(m.card_uid || "").trim().toLowerCase() === identifier.toLowerCase() ||
+        String(m.member_id || "").trim().toLowerCase() === identifier.toLowerCase() ||
+        String(m.id || "").trim() === identifier ||
+        (m.mobile && String(m.mobile).replace(/\D/g, "").endsWith(identifier.replace(/\D/g, "")))
+      );
+      return await executeDirectSupabaseCheckIn(identifier, notes, localMemberForNetlify);
+    }
+
     // Check local member state
     const localMember = (allMembersList || []).find(m => 
       String(m.card_uid || "").trim().toLowerCase() === identifier.toLowerCase() ||
