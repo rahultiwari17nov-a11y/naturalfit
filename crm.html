@@ -16,9 +16,13 @@
       .stat-val { font-size: 28px; font-weight: 800; font-family: var(--font-display); margin-top: 5px; }
       .controls-bar { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: center; justify-content: space-between; }
       .search-box { flex: 1; min-width: 260px; }
-      .tab-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-muted); cursor: pointer; font-size: 13px; font-weight: 600; }
-      .tab-btn.active { background: var(--primary-green); color: #000; border-color: var(--primary-green); }
-      .nav-links { display: flex; gap: 8px; align-items: center; }
+      .tab-btn { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--bg-surface); color: var(--text-muted); cursor: pointer; font-size: 13px; font-weight: 600; text-align: center; }
+      .tab-btn.active { background: var(--primary-green); color: #000; border-color: var(--primary-green); font-weight: 700; }
+      .nav-links { display: grid; grid-template-columns: repeat(4, auto); gap: 10px; align-items: center; }
+      @media (max-width: 640px) {
+        .nav-links { grid-template-columns: repeat(2, 1fr); width: 100%; }
+        .header-nav { flex-direction: column; gap: 16px; align-items: stretch; }
+      }
       .hidden { display: none !important; }
       .logo-text { font-family: var(--font-display); font-size: 22px; font-weight: 800; color: var(--primary-green); }
       .logo-text span { color: #fff; }
@@ -45,11 +49,39 @@
         </div>
 
         <div class="nav-links">
-          <button class="tab-btn active" id="tab-members-btn" onclick="switchView('members')">Member List</button>
+          <button class="tab-btn" id="tab-members-btn" onclick="switchView('members')">Member List</button>
           <button class="tab-btn" id="tab-register-btn" onclick="switchView('register')">+ New Registration</button>
-          <a href="/" class="btn-secondary" style="padding: 8px 14px; font-size: 13px;">Public Site</a>
+          <button class="tab-btn active" id="tab-attendance-btn" onclick="switchView('attendance')">Attendance Tracker</button>
+          <a href="/" class="btn-secondary" style="padding: 8px 14px; font-size: 13px;">Admin Login</a>
         </div>
       </header>
+      
+      <!-- Attendance View -->
+      <section id="view-attendance">
+        <div class="card">
+            <div class="flex justify-between items-center mb-6">
+                <h2 style="margin: 0; font-family: var(--font-display);">Attendance Tracker</h2>
+                <button onclick="toggleMute()" id="mute-btn" class="btn-secondary">Unmute Audio</button>
+            </div>
+            
+            <div id="attendance-msg" class="hidden p-4 rounded-lg mb-4 flex items-center gap-3"></div>
+
+            <div class="stats-grid mb-6">
+                <div class="stat-card"><div style="font-size: 11px; color: var(--text-muted);">Total Scans</div><div class="stat-val" id="stat-scans">0</div></div>
+                <div class="stat-card"><div style="font-size: 11px; color: var(--status-active);">Valid Entries</div><div class="stat-val" id="stat-valid">0</div></div>
+                <div class="stat-card"><div style="font-size: 11px; color: var(--status-expired);">Expired</div><div class="stat-val" id="stat-expired-scans">0</div></div>
+            </div>
+
+            <div class="table-container">
+                <table id="attendance-table">
+                    <thead>
+                        <tr><th>Date & Time</th><th>Member Name</th><th>Member ID</th><th>Status</th></tr>
+                    </thead>
+                    <tbody id="attendance-body"></tbody>
+                </table>
+            </div>
+        </div>
+      </section>
 
       <!-- STATS BAR -->
       <div class="stats-grid">
@@ -72,7 +104,7 @@
       </div>
 
       <!-- VIEW 1: MEMBER LIST & EXPIRY TRACKING -->
-      <section id="view-members">
+      <section id="view-members" class="hidden" class="">
         <div class="controls-bar">
           <div class="search-box">
             <input type="text" id="search-input" class="form-input" placeholder="Search by name or mobile number..." oninput="handleSearch(this.value)" />
@@ -170,10 +202,110 @@
     </div>
 
     <!-- Client-side script -->
-    <script>
+      // Attendance Logic
       let currentMembers = [];
-      const today = new Date().toISOString().split('T')[0];
-      document.getElementById('reg-start-date').value = today;
+      let isMuted = true;
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      function playTone(type) {
+        if (isMuted) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        if (type === 'valid') {
+            osc.frequency.setValueAtTime(800, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(1200, audioCtx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.25);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.25);
+        } else if (type === 'duplicate') {
+            osc.type = 'sine'; osc.frequency.setValueAtTime(440, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(330, audioCtx.currentTime + 0.2);
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.2);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.2);
+        } else { // denied
+            osc.type = 'square'; osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(140, audioCtx.currentTime + 0.35);
+            gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.35);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.35);
+        }
+      }
+
+      function toggleMute() {
+        isMuted = !isMuted;
+        document.getElementById('mute-btn').innerText = isMuted ? 'Unmute Audio' : 'Mute Audio';
+      }
+
+      let scannerBuffer = '';
+      let lastScan = 0;
+      window.addEventListener('keydown', e => {
+        const now = Date.now();
+        if (now - lastScan > 3000) scannerBuffer = '';
+        lastScan = now;
+
+        if (e.key === 'Enter') {
+          if (scannerBuffer.length > 0) {
+            handleCheckIn(scannerBuffer);
+            scannerBuffer = '';
+          }
+        } else if (e.key.length === 1) scannerBuffer += e.key;
+      });
+
+      async function handleCheckIn(id) {
+        try {
+          const res = await fetch('/api/attendance/check-in', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ identifier: id })
+          });
+          let data = {};
+          try {
+            const text = await res.text();
+            data = JSON.parse(text);
+          } catch(e) { data = {}; }
+
+          const msgEl = document.getElementById('attendance-msg');
+          msgEl.classList.remove('hidden', 'bg-green-100', 'bg-amber-100', 'bg-red-100');
+          if (res.status === 403 || data.status === 'expired' || (data.error && data.error.toLowerCase().includes('expired'))) {
+            playTone('denied');
+            msgEl.classList.add('bg-red-100', 'text-red-800');
+            msgEl.innerText = "Member plan has expired, please renew plan to continue";
+          } else if (res.ok && data.status === 'valid' && data.success !== false) {
+            playTone('valid');
+            msgEl.classList.add('bg-green-100', 'text-green-800');
+            msgEl.innerText = `Checked in: ${data.member ? data.member.name : 'Member'}`;
+          } else if (res.status === 409 || data.status === 'duplicate') {
+            playTone('duplicate');
+            msgEl.classList.add('bg-amber-100', 'text-amber-800');
+            msgEl.innerText = data.error || 'Duplicate Attendance Blocked';
+          } else {
+            playTone('denied');
+            msgEl.classList.add('bg-red-100', 'text-red-800');
+            msgEl.innerText = data.error || "Member plan has expired, please renew plan to continue";
+          }
+          loadAttendance();
+        } catch(e) { console.error(e); }
+      }
+
+      async function loadAttendance() {
+        console.log("Loading attendance...");
+        const res = await fetch('/api/attendance');
+        const data = await res.json();
+        const tbody = document.getElementById('attendance-body');
+        tbody.innerHTML = data.map(a => `<tr>
+          <td>${a.check_in_time}</td>
+          <td>${a.name}</td>
+          <td>${a.member_id}</td>
+          <td>${a.status}</td>
+        </tr>`).join('');
+        document.getElementById('stat-scans').innerText = data.length;
+        document.getElementById('stat-valid').innerText = data.filter(a => a.status === 'valid').length;
+        document.getElementById('stat-expired-scans').innerText = data.filter(a => a.status === 'expired').length;
+      }
 
       function formatToDMY(dateInput) {
         if (!dateInput) return '';
@@ -222,8 +354,11 @@
       function switchView(view) {
         document.getElementById('tab-members-btn').classList.toggle('active', view === 'members');
         document.getElementById('tab-register-btn').classList.toggle('active', view === 'register');
+        document.getElementById('tab-attendance-btn').classList.toggle('active', view === 'attendance');
         document.getElementById('view-members').classList.toggle('hidden', view !== 'members');
         document.getElementById('view-register').classList.toggle('hidden', view !== 'register');
+        document.getElementById('view-attendance').classList.toggle('hidden', view !== 'attendance');
+        if (view === 'attendance') loadAttendance();
       }
 
       async function loadMembers() {
@@ -339,6 +474,7 @@
 
       // Initial load
       loadMembers();
+      loadAttendance();
     </script>
   </body>
 </html>

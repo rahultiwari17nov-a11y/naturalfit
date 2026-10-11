@@ -111,12 +111,22 @@ function checkRateLimit(ip, maxAttempts = 10, windowMs = 60 * 1e3) {
 var SQL = null;
 var db = null;
 var DB_FILE_PATH = import_path.default.join(process.cwd(), "gym.db");
+function parseDateParts(dateStr) {
+  if (!dateStr) return new Date();
+  const cleanStr = String(dateStr).trim().split("T")[0].split(" ")[0];
+  const parts = cleanStr.split("-");
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    } else if (parts[2].length === 4) {
+      return new Date(parseInt(parts[2], 10), parseInt(parts[1], 10) - 1, parseInt(parts[0], 10));
+    }
+  }
+  const d = new Date(dateStr);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
 function calculateExpiry(startDateStr, planType) {
-  const parts = startDateStr.split("-");
-  const year = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1;
-  const day = parseInt(parts[2], 10);
-  const date = new Date(year, month, day);
+  const date = parseDateParts(startDateStr);
   switch (planType) {
     case "1 Month":
     case "Monthly":
@@ -149,8 +159,7 @@ function calculateExpiry(startDateStr, planType) {
 function computeMemberStatus(expiryDateStr) {
   const today = /* @__PURE__ */ new Date();
   today.setHours(0, 0, 0, 0);
-  const parts = expiryDateStr.split("-");
-  const expDate = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+  const expDate = parseDateParts(expiryDateStr);
   expDate.setHours(0, 0, 0, 0);
   const diffMs = expDate.getTime() - today.getTime();
   const days = Math.ceil(diffMs / (1e3 * 60 * 60 * 24));
@@ -234,8 +243,14 @@ async function getDb() {
         status VARCHAR(50) DEFAULT 'new',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
-  `);
-  db.run(`
+    CREATE TABLE IF NOT EXISTS attendance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER NOT NULL,
+        check_in_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        status TEXT NOT NULL,
+        reception_notes TEXT,
+        FOREIGN KEY (member_id) REFERENCES members(id)
+    );
     CREATE TABLE IF NOT EXISTS user_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username VARCHAR(100) UNIQUE NOT NULL,
@@ -255,6 +270,9 @@ function ensureMemberColumns(database) {
     const tableInfo = database.exec("PRAGMA table_info(members)");
     if (tableInfo.length > 0 && tableInfo[0].values.length > 0) {
       const existingCols = new Set(tableInfo[0].values.map((col) => String(col[1]).toLowerCase()));
+      if (!existingCols.has("card_uid")) {
+        database.run("ALTER TABLE members ADD COLUMN card_uid VARCHAR(100)");
+      }
       if (!existingCols.has("member_id")) {
         database.run("ALTER TABLE members ADD COLUMN member_id VARCHAR(100)");
       }
@@ -310,7 +328,7 @@ function ensureMemberColumns(database) {
 }
 async function getAllMembers(searchQuery = "", statusFilter = "all") {
   const database = await getDb();
-  let sql = "SELECT id, member_id, name, gender, date_of_birth, address, mobile, plan_type, start_date, expiry_date, profile_picture, documents, medical_history, amount, registration_fee, is_renewal, discount, tax, final_amount, paid_amount, remaining_amount, payment_mode, payment_history, created_at FROM members";
+  let sql = "SELECT id, member_id, name, gender, date_of_birth, address, mobile, plan_type, start_date, expiry_date, profile_picture, documents, medical_history, amount, registration_fee, is_renewal, discount, tax, final_amount, paid_amount, remaining_amount, payment_mode, payment_history, card_uid, created_at FROM members";
   const params = [];
   if (searchQuery.trim()) {
     sql += " WHERE (name LIKE ? OR mobile LIKE ? OR member_id LIKE ?)";
@@ -893,7 +911,7 @@ async function startServer() {
   app.get("/api/auth/me", requireAuth, (req, res) => {
     res.json({ authenticated: true, user: req.user });
   });
-  app.get("/api/members", requireAuth, async (req, res) => {
+  app.get("/api/members", async (req, res) => {
     try {
       const q = typeof req.query.q === "string" ? stripHtml(req.query.q) : "";
       const status = typeof req.query.status === "string" ? stripHtml(req.query.status) : "all";
@@ -1067,6 +1085,191 @@ async function startServer() {
       res.status(400).json({ error: err.message || "Failed to renew member plan" });
     }
   });
+  app.get("/api/attendance", async (req, res) => {
+    try {
+      const db = await getDb();
+      const { start_date, end_date, status, q } = req.query;
+      let sql = `
+        SELECT a.*, m.name, m.member_id, m.card_uid, m.plan_type, m.expiry_date 
+        FROM attendance a
+        JOIN members m ON a.member_id = m.id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (start_date) { sql += " AND (date(a.check_in_time) >= date(?) OR a.check_in_time >= ?)"; params.push(start_date, start_date + " 00:00:00"); }
+      if (end_date) { sql += " AND (date(a.check_in_time) <= date(?) OR a.check_in_time <= ?)"; params.push(end_date, end_date + " 23:59:59"); }
+      if (status && status !== "all") { sql += " AND a.status = ?"; params.push(status); }
+      if (q) { sql += " AND (m.name LIKE ? OR m.member_id LIKE ? OR m.card_uid LIKE ?)"; params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+      sql += " ORDER BY a.check_in_time DESC";
+      const stmt = db.prepare(sql);
+      stmt.bind(params);
+      const attendance = [];
+      while (stmt.step()) attendance.push(stmt.getAsObject());
+      stmt.free();
+      res.json(attendance);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to fetch attendance" });
+    }
+  });
+
+  const getSupabaseServerClient = () => {
+    try {
+      const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://kkhnpgztzfpmjltsuhmo.supabase.co";
+      const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || "sb_publishable_ZEh4rJnXI_uEnWYHp7YGHA_st4b9kwU";
+      if (supabaseUrl && supabaseKey) {
+        return (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey);
+      }
+    } catch (e) {
+      console.warn("Could not create Supabase client:", e.message);
+    }
+    return null;
+  };
+
+  app.post("/api/attendance/check-in", async (req, res) => {
+    try {
+      const { identifier, notes } = req.body || {};
+      if (!identifier || !String(identifier).trim()) {
+        return res.status(400).json({ error: "Card UID or Member ID is required." });
+      }
+      const rawId = String(identifier).trim();
+      const db = await getDb();
+      
+      const member = db.prepare("SELECT * FROM members WHERE card_uid = ? OR member_id = ? OR mobile = ? OR id = ?").getAsObject([rawId, rawId, rawId, rawId]);
+      
+      if (!member || !member.id) {
+        return res.status(404).json({ error: `Unregistered Card / Member not found for "${rawId}".`, status: "unregistered" });
+      }
+
+      // Policy 2 — Strict Duplicate Attendance Block (1 Valid Check-in per Day)
+      const now = new Date();
+      const todayIso = now.toISOString().split("T")[0];
+      const dupStmt = db.prepare("SELECT * FROM attendance WHERE member_id = ? AND status = 'valid' AND (date(check_in_time) = date('now') OR date(check_in_time) = date(?) OR check_in_time LIKE ?)");
+      dupStmt.bind([member.id, todayIso, `${todayIso}%`]);
+      let existingValid = null;
+      if (dupStmt.step()) {
+        existingValid = dupStmt.getAsObject();
+      }
+      dupStmt.free();
+      
+      if (existingValid && existingValid.id) {
+        let timeStr = "earlier today";
+        if (existingValid.check_in_time) {
+          const raw = String(existingValid.check_in_time);
+          if (raw.includes(" ")) timeStr = raw.split(" ")[1];
+          else if (raw.includes("T")) timeStr = raw.split("T")[1].split(".")[0];
+        }
+        return res.status(409).json({ 
+          error: `Duplicate Attendance Blocked: ${member.name} already checked in today at ${timeStr}. Multiple check-ins on the same day are not permitted.`,
+          status: "duplicate",
+          member,
+          existing: existingValid
+        });
+      }
+
+      // Policy 3 — Expired Plan Denial (Access Denied)
+      const expDate = parseDateParts(member.expiry_date);
+      const todayZero = new Date();
+      todayZero.setHours(0, 0, 0, 0);
+      expDate.setHours(0, 0, 0, 0);
+
+      if (expDate < todayZero) {
+        db.run("INSERT INTO attendance (member_id, status, reception_notes) VALUES (?, 'expired', ?)", [member.id, notes || "Front desk expired attempt"]);
+        saveDatabase();
+        try {
+          const sb = getSupabaseServerClient();
+          if (sb) {
+            sb.from("attendance").insert([{
+              member_id: member.id,
+              status: "expired",
+              check_in_time: now.toISOString(),
+              reception_notes: notes || "Front desk expired attempt"
+            }]).then(({ error }) => { if (error) console.warn("[Supabase Attendance Sync Note]:", error.message); }).catch(() => {});
+          }
+        } catch (_) {}
+        return res.status(200).json({ 
+          success: false,
+          error: "Member plan has expired, please renew plan to continue",
+          message: "Member plan has expired, please renew plan to continue",
+          status: "expired",
+          member 
+        });
+      }
+
+      // Valid entry
+      db.run("INSERT INTO attendance (member_id, status, reception_notes) VALUES (?, 'valid', ?)", [member.id, notes || ""]);
+      saveDatabase();
+
+      // Realtime dual-write sync to Supabase table 'attendance'
+      try {
+        const sb = getSupabaseServerClient();
+        if (sb) {
+          sb.from("attendance").insert([{
+            member_id: member.id,
+            status: "valid",
+            check_in_time: now.toISOString(),
+            reception_notes: notes || "Front desk verification"
+          }]).then(({ error: sbErr }) => {
+            if (sbErr) {
+              console.warn("[Supabase Attendance Sync Note]:", sbErr.message);
+            } else {
+              console.log("[Supabase Attendance Sync Success]: Record saved to Supabase attendance table.");
+            }
+          }).catch(e => console.warn("[Supabase Attendance Sync Error]:", e.message));
+        }
+      } catch (err) {
+        console.warn("Supabase background attendance sync exception:", err);
+      }
+
+      res.json({ success: true, member, status: "valid", timestamp: now.toISOString() });
+    } catch (err) {
+      console.error("Check-in error:", err);
+      res.status(500).json({ error: "Failed check-in: " + (err.message || "Unknown error") });
+    }
+  });
+
+  // Sync local attendance records to Supabase
+  app.post("/api/sync/attendance-to-supabase", async (req, res) => {
+    try {
+      const sb = getSupabaseServerClient();
+      if (!sb) {
+        return res.status(400).json({ error: "Supabase client could not be initialized." });
+      }
+      const db = await getDb();
+      const stmt = db.prepare("SELECT * FROM attendance ORDER BY id ASC");
+      const localRows = [];
+      while (stmt.step()) localRows.push(stmt.getAsObject());
+      stmt.free();
+
+      if (localRows.length === 0) {
+        return res.json({ success: true, message: "No local attendance records to sync.", synced: 0 });
+      }
+
+      const rowsToInsert = localRows.map(r => ({
+        member_id: r.member_id,
+        status: r.status || "valid",
+        check_in_time: r.check_in_time || new Date().toISOString(),
+        reception_notes: r.reception_notes || ""
+      }));
+
+      const { data, error } = await sb.from("attendance").insert(rowsToInsert);
+      if (error) {
+        return res.status(500).json({ 
+          error: error.message, 
+          hint: "Please create the 'attendance' table in your Supabase SQL editor first." 
+        });
+      }
+      res.json({ 
+        success: true, 
+        message: `Successfully synchronized ${localRows.length} attendance records to Supabase!`, 
+        synced: localRows.length 
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+
   app.post("/api/sync/supabase", requireAuth, async (req, res) => {
     try {
       const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;

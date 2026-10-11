@@ -12,7 +12,10 @@
     "@supabase/supabase-js": "^2.48.1",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.2",
+    "jsbarcode": "^3.12.3",
     "jsonwebtoken": "^9.0.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
     "sql.js": "^1.12.0"
   }
 }
