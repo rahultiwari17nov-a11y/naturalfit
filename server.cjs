@@ -380,6 +380,20 @@ async function getMemberById(id) {
   stmt.free();
   return member;
 }
+
+const getSupabaseServerClient = () => {
+  try {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "https://kkhnpgztzfpmjltsuhmo.supabase.co";
+    const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || "sb_publishable_ZEh4rJnXI_uEnWYHp7YGHA_st4b9kwU";
+    if (supabaseUrl && supabaseKey) {
+      return (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey);
+    }
+  } catch (e) {
+    console.warn("Could not create Supabase client:", e.message);
+  }
+  return null;
+};
+
 async function insertMember(data) {
   const database = await getDb();
   const expiryDate = calculateExpiry(data.start_date, data.plan_type);
@@ -448,6 +462,43 @@ async function insertMember(data) {
     newId = Number(maxRes[0]?.values[0]?.[0] || 0);
   }
   saveDatabase();
+
+  // Dual-write: Sync new member to Supabase
+  try {
+    const sb = getSupabaseServerClient();
+    if (sb) {
+      sb.from("members").insert([{
+        member_id: manualMemberId || String(newId),
+        name: cleanName,
+        gender: cleanGender,
+        date_of_birth: dob,
+        address: cleanAddress,
+        mobile: cleanMobile,
+        plan_type: data.plan_type,
+        start_date: data.start_date,
+        expiry_date: expiryDate,
+        profile_picture: cleanProfilePic,
+        documents: data.documents || "",
+        medical_history: cleanMedHistory,
+        amount: totalAmount,
+        registration_fee: regFee,
+        is_renewal: Boolean(data.is_renewal),
+        discount: discount,
+        tax: tax,
+        final_amount: finalAmount,
+        paid_amount: paidAmount,
+        remaining_amount: remainingAmount,
+        payment_mode: cleanPaymentMode,
+        payment_history: cleanPaymentHistory
+      }]).then(({ error }) => {
+        if (error) console.warn("[Supabase Member Insert] Warning:", error.message);
+        else console.log(`[Supabase Member Insert] Member "${cleanName}" (${manualMemberId || newId}) saved to Supabase.`);
+      }).catch(err => console.warn("[Supabase Member Insert] Exception:", err.message));
+    }
+  } catch (sbErr) {
+    console.warn("[Supabase Member Sync Error]:", sbErr.message);
+  }
+
   const { status, days_remaining } = computeMemberStatus(expiryDate);
   return {
     id: newId,
@@ -561,12 +612,58 @@ async function updateMember(id, data) {
     ]
   );
   saveDatabase();
+
+  // Dual-write: Sync update to Supabase
+  try {
+    const sb = getSupabaseServerClient();
+    if (sb) {
+      const targetCode = updatedMemberId || String(id);
+      sb.from("members").update({
+        name: updatedName,
+        gender: updatedGender,
+        date_of_birth: updatedDob,
+        address: updatedAddress,
+        mobile: updatedMobile,
+        plan_type: newPlan,
+        start_date: newStartDate,
+        expiry_date: newExpiryDate,
+        profile_picture: updatedProfilePic || "",
+        documents: updatedDocuments || "",
+        medical_history: updatedMedHistory || "",
+        amount: updatedAmount,
+        registration_fee: updatedRegFee,
+        is_renewal: Boolean(updatedIsRenewal),
+        discount: updatedDiscount,
+        tax: updatedTax,
+        final_amount: updatedFinalAmount,
+        paid_amount: updatedPaidAmount,
+        remaining_amount: updatedRemainingAmount,
+        payment_mode: updatedPaymentMode,
+        payment_history: updatedPaymentHistory
+      }).or(`member_id.eq.${targetCode},id.eq.${id}`).catch(() => {});
+    }
+  } catch (_) {}
+
   return await getMemberById(id);
 }
 async function deleteMember(id) {
   const database = await getDb();
+  let targetCode = String(id);
+  try {
+    const current = await getMemberById(id);
+    if (current && current.member_id) targetCode = current.member_id;
+  } catch (_) {}
   database.run("DELETE FROM members WHERE id = ?", [id]);
   saveDatabase();
+
+  // Dual-write: Sync delete to Supabase
+  try {
+    const sb = getSupabaseServerClient();
+    if (sb) {
+      sb.from("members").delete().or(`member_id.eq.${targetCode},id.eq.${id}`).catch(() => {});
+    }
+  } catch (_) {}
+
   return { success: true, id };
 }
 async function renewMember(id, planType, newStartDate, discount = 0, amount = null) {
@@ -588,6 +685,27 @@ async function renewMember(id, planType, newStartDate, discount = 0, amount = nu
     [planType, startDate, expiryDate, baseAmount, disc, finalAmount, finalAmount, id]
   );
   saveDatabase();
+
+  // Dual-write: Sync renewal to Supabase
+  try {
+    const sb = getSupabaseServerClient();
+    if (sb) {
+      const targetCode = current.member_id || String(id);
+      sb.from("members").update({
+        plan_type: planType,
+        start_date: startDate,
+        expiry_date: expiryDate,
+        amount: baseAmount,
+        discount: disc,
+        final_amount: finalAmount,
+        paid_amount: finalAmount,
+        remaining_amount: 0,
+        is_renewal: true,
+        registration_fee: 0
+      }).or(`member_id.eq.${targetCode},id.eq.${id}`).catch(() => {});
+    }
+  } catch (_) {}
+
   const { status, days_remaining } = computeMemberStatus(expiryDate);
   return { success: true, id, plan_type: planType, start_date: startDate, expiry_date: expiryDate, amount: baseAmount, discount: disc, final_amount: finalAmount, status, days_remaining };
 }
@@ -1135,8 +1253,43 @@ async function startServer() {
       const rawId = String(identifier).trim();
       const db = await getDb();
       
-      const member = db.prepare("SELECT * FROM members WHERE card_uid = ? OR member_id = ? OR mobile = ? OR id = ?").getAsObject([rawId, rawId, rawId, rawId]);
+      let member = db.prepare("SELECT * FROM members WHERE card_uid = ? OR member_id = ? OR mobile = ? OR id = ?").getAsObject([rawId, rawId, rawId, rawId]);
       
+      if (!member || !member.id) {
+        try {
+          const sb = getSupabaseServerClient();
+          if (sb) {
+            const isNum = !isNaN(Number(rawId));
+            const filter = isNum ? `member_id.eq.${rawId},mobile.eq.${rawId},id.eq.${Number(rawId)}` : `member_id.eq.${rawId},mobile.eq.${rawId}`;
+            const { data: sbMembers } = await sb.from("members").select("*").or(filter).limit(1);
+            if (sbMembers && sbMembers.length > 0) {
+              const sm = sbMembers[0];
+              const memId = String(sm.member_id || sm.id);
+              db.run(
+                `INSERT INTO members (
+                  member_id, name, gender, date_of_birth, address, mobile, plan_type, start_date, expiry_date,
+                  profile_picture, documents, medical_history, amount, registration_fee, is_renewal, discount, tax,
+                  final_amount, paid_amount, remaining_amount, payment_mode, payment_history, card_uid, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                  memId, sm.name || "", sm.gender || "Male", sm.date_of_birth || "", sm.address || "", sm.mobile || "",
+                  sm.plan_type || "", sm.start_date || "", sm.expiry_date || "", sm.profile_picture || "", sm.documents || "[]",
+                  sm.medical_history || "", Number(sm.amount) || 0, Number(sm.registration_fee) || 0, sm.is_renewal ? 1 : 0,
+                  Number(sm.discount) || 0, Number(sm.tax) || 0, Number(sm.final_amount) || 0, Number(sm.paid_amount) || 0,
+                  Number(sm.remaining_amount) || 0, sm.payment_mode || "Via Online", sm.payment_history || "[]",
+                  memId, sm.created_at || new Date().toISOString()
+                ]
+              );
+              saveDatabase();
+              member = db.prepare("SELECT * FROM members WHERE member_id = ? OR id = ?").getAsObject([memId, sm.id]);
+              console.log(`[Supabase On-Demand Sync] Auto-imported member "${sm.name}" (ID: ${memId}) into local database.`);
+            }
+          }
+        } catch (sbErr) {
+          console.warn("[Check-in On-Demand Supabase Lookup]:", sbErr.message);
+        }
+      }
+
       if (!member || !member.id) {
         return res.status(404).json({ error: `Unregistered Card / Member not found for "${rawId}".`, status: "unregistered" });
       }
@@ -1420,6 +1573,49 @@ async function startServer() {
   });
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[NFT Gym] Server running on http://0.0.0.0:${PORT}`);
+    // Auto-sync missing members from Supabase on startup
+    (async () => {
+      try {
+        const sb = getSupabaseServerClient();
+        if (!sb) return;
+        const { data: sbMembers, error: sbErr } = await sb.from("members").select("*");
+        if (sbErr || !sbMembers || sbMembers.length === 0) return;
+        const db = await getDb();
+        const existing = new Set();
+        const stmt = db.prepare("SELECT member_id FROM members");
+        while (stmt.step()) existing.add(String(stmt.getAsObject().member_id));
+        stmt.free();
+        let imported = 0;
+        for (const m of sbMembers) {
+          const memId = String(m.member_id || m.id);
+          if (!existing.has(memId)) {
+            db.run(
+              `INSERT INTO members (
+                member_id, name, gender, date_of_birth, address, mobile, plan_type, start_date, expiry_date,
+                profile_picture, documents, medical_history, amount, registration_fee, is_renewal, discount, tax,
+                final_amount, paid_amount, remaining_amount, payment_mode, payment_history, card_uid, created_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                memId, m.name || "", m.gender || "Male", m.date_of_birth || "", m.address || "", m.mobile || "",
+                m.plan_type || "", m.start_date || "", m.expiry_date || "", m.profile_picture || "", m.documents || "[]",
+                m.medical_history || "", Number(m.amount) || 0, Number(m.registration_fee) || 0, m.is_renewal ? 1 : 0,
+                Number(m.discount) || 0, Number(m.tax) || 0, Number(m.final_amount) || 0, Number(m.paid_amount) || 0,
+                Number(m.remaining_amount) || 0, m.payment_mode || "Via Online", m.payment_history || "[]",
+                memId, m.created_at || new Date().toISOString()
+              ]
+            );
+            existing.add(memId);
+            imported++;
+          }
+        }
+        if (imported > 0) {
+          saveDatabase();
+          console.log(`[Startup Supabase Sync] Auto-imported ${imported} members into local SQLite.`);
+        }
+      } catch (err) {
+        console.warn("[Startup Supabase Sync] Warning:", err.message);
+      }
+    })();
   });
 }
 startServer();

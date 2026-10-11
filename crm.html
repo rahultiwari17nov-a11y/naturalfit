@@ -291,20 +291,67 @@
         } catch(e) { console.error(e); }
       }
 
+      const SB_URL = "https://kkhnpgztzfpmjltsuhmo.supabase.co";
+      const SB_KEY = "sb_publishable_ZEh4rJnXI_uEnWYHp7YGHA_st4b9kwU";
+      const SB_HEADERS = {
+        "apikey": SB_KEY,
+        "Authorization": `Bearer ${SB_KEY}`,
+        "Content-Type": "application/json"
+      };
+
       async function loadAttendance() {
         console.log("Loading attendance...");
-        const res = await fetch('/api/attendance');
-        const data = await res.json();
+        let data = [];
+        try {
+          const res = await fetch('/api/attendance');
+          if (res.ok) {
+            const text = await res.text();
+            if (text && !text.trim().startsWith("<")) {
+              data = JSON.parse(text);
+            }
+          }
+        } catch(e) {
+          console.warn("Express /api/attendance error:", e);
+        }
+
+        // Direct Supabase fallback (Netlify / static hosting)
+        if (!Array.isArray(data) || data.length === 0) {
+          try {
+            const sbRes = await fetch(`${SB_URL}/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes&order=id.desc&limit=50`, {
+              headers: SB_HEADERS
+            });
+            if (sbRes.ok) {
+              const raw = await sbRes.json();
+              if (Array.isArray(raw)) {
+                data = raw.map(a => {
+                  const m = (currentMembers || []).find(x => x.id === a.member_id || String(x.member_id) === String(a.member_id));
+                  return {
+                    ...a,
+                    name: m ? m.name : `Member #${a.member_id}`,
+                    member_id: m ? (m.member_id || m.id) : a.member_id
+                  };
+                });
+              }
+            }
+          } catch(sbErr) {
+            console.warn("Supabase attendance fetch error:", sbErr);
+          }
+        }
+
         const tbody = document.getElementById('attendance-body');
-        tbody.innerHTML = data.map(a => `<tr>
-          <td>${a.check_in_time}</td>
-          <td>${a.name}</td>
-          <td>${a.member_id}</td>
-          <td>${a.status}</td>
-        </tr>`).join('');
-        document.getElementById('stat-scans').innerText = data.length;
-        document.getElementById('stat-valid').innerText = data.filter(a => a.status === 'valid').length;
-        document.getElementById('stat-expired-scans').innerText = data.filter(a => a.status === 'expired').length;
+        if (tbody) {
+          tbody.innerHTML = (Array.isArray(data) ? data : []).map(a => `<tr>
+            <td>${a.check_in_time || ''}</td>
+            <td>${escapeHtml(a.name || `Member #${a.member_id}`)}</td>
+            <td>${escapeHtml(String(a.member_id || ''))}</td>
+            <td><span class="${a.status === 'valid' ? 'badge-active' : 'badge-expired'}">${a.status || ''}</span></td>
+          </tr>`).join('');
+        }
+        if (Array.isArray(data)) {
+          document.getElementById('stat-scans').innerText = data.length;
+          document.getElementById('stat-valid').innerText = data.filter(a => a.status === 'valid').length;
+          document.getElementById('stat-expired-scans').innerText = data.filter(a => a.status === 'expired').length;
+        }
       }
 
       function formatToDMY(dateInput) {
@@ -363,19 +410,78 @@
 
       async function loadMembers() {
         try {
-          const q = document.getElementById('search-input').value;
-          const status = document.getElementById('status-filter').value;
-          const res = await fetch(`/api/members?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`);
-          const data = await res.json();
-          currentMembers = data.members || [];
+          const q = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
+          const status = document.getElementById('status-filter')?.value || 'all';
+          let loaded = false;
+
+          try {
+            const res = await fetch(`/api/members?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`);
+            if (res.ok) {
+              const text = await res.text();
+              if (text && !text.trim().startsWith('<')) {
+                const data = JSON.parse(text);
+                if (data && Array.isArray(data.members)) {
+                  currentMembers = data.members;
+                  loaded = true;
+                }
+              }
+            }
+          } catch (_) {}
+
+          // Fallback: Direct Supabase fetch (Netlify / static hosting)
+          if (!loaded) {
+            const sbRes = await fetch(`${SB_URL}/rest/v1/members?select=*&order=id.desc`, { headers: SB_HEADERS });
+            if (sbRes.ok) {
+              let members = await sbRes.json();
+              if (Array.isArray(members)) {
+                const now0 = new Date();
+                now0.setHours(0,0,0,0);
+                members = members.map(m => {
+                  let expDate = null;
+                  if (m.expiry_date) {
+                    const cleanExp = String(m.expiry_date).trim().split('T')[0];
+                    const parts = cleanExp.split(/[-/]/);
+                    if (parts.length === 3) {
+                      if (parts[0].length === 4) expDate = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+                      else expDate = new Date(parseInt(parts[2]), parseInt(parts[1])-1, parseInt(parts[0]));
+                    }
+                  }
+                  let days_remaining = 0;
+                  let st = 'active';
+                  if (expDate) {
+                    expDate.setHours(0,0,0,0);
+                    const diffTime = expDate - now0;
+                    days_remaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    if (days_remaining < 0) st = 'expired';
+                    else if (days_remaining <= 5) st = 'expiring';
+                    else st = 'active';
+                  }
+                  return { ...m, status: st, days_remaining };
+                });
+
+                if (q) {
+                  members = members.filter(m => (m.name || '').toLowerCase().includes(q) || (m.mobile || '').includes(q) || String(m.member_id || '').includes(q));
+                }
+                if (status !== 'all') {
+                  members = members.filter(m => m.status === status);
+                }
+                currentMembers = members;
+                loaded = true;
+              }
+            }
+          }
+
           renderTable(currentMembers);
 
-          const statsRes = await fetch('/api/stats');
-          const stats = await statsRes.json();
-          document.getElementById('stat-total').innerText = stats.total;
-          document.getElementById('stat-active').innerText = stats.active;
-          document.getElementById('stat-expiring').innerText = stats.expiring;
-          document.getElementById('stat-expired').innerText = stats.expired;
+          // Update stats
+          let total = currentMembers.length;
+          let active = currentMembers.filter(m => m.status === 'active').length;
+          let expiring = currentMembers.filter(m => m.status === 'expiring').length;
+          let expired = currentMembers.filter(m => m.status === 'expired').length;
+          document.getElementById('stat-total').innerText = total;
+          document.getElementById('stat-active').innerText = active;
+          document.getElementById('stat-expiring').innerText = expiring;
+          document.getElementById('stat-expired').innerText = expired;
         } catch (e) {
           console.error('Failed loading members', e);
         }
@@ -430,37 +536,97 @@
 
       async function handleRegister(e) {
         e.preventDefault();
-        const name = document.getElementById('reg-name').value;
-        const mobile = document.getElementById('reg-mobile').value;
+        const name = document.getElementById('reg-name').value.trim();
+        const mobile = document.getElementById('reg-mobile').value.trim();
         const plan_type = document.getElementById('reg-plan').value;
         const start_date = document.getElementById('reg-start-date').value;
-        const address = document.getElementById('reg-address').value;
+        const address = document.getElementById('reg-address').value.trim();
 
+        // Calculate expiry date
+        const parts = start_date.split('-');
+        const d = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        if (plan_type === 'Monthly' || plan_type === '1 Month') d.setMonth(d.getMonth() + 1);
+        else if (plan_type === 'Quarterly' || plan_type === '3 Months') d.setMonth(d.getMonth() + 3);
+        else if (plan_type === 'Six Months' || plan_type === '6 Months') d.setMonth(d.getMonth() + 6);
+        else if (plan_type === 'Yearly' || plan_type === '1 Year') d.setFullYear(d.getFullYear() + 1);
+        else d.setMonth(d.getMonth() + 1);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        const expiry_date = `${yyyy}-${mm}-${dd}`;
+
+        let saved = false;
+        let createdMember = null;
+
+        // Try Express API first
         try {
           const res = await fetch('/api/members', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, mobile, plan_type, start_date, address }),
           });
-          const data = await res.json();
-          if (data.success) {
-            alert(`Member ${data.member.name} enrolled with expiry on ${formatToDMY(data.member.expiry_date)}!`);
-            document.getElementById('registration-form').reset();
-            document.getElementById('reg-start-date').value = today;
-            updateCalculatedExpiry();
-            switchView('members');
-            loadMembers();
-          } else {
-            alert(data.error || 'Registration failed');
+          if (res.ok) {
+            const text = await res.text();
+            if (text && !text.trim().startsWith('<')) {
+              const data = JSON.parse(text);
+              if (data.success && data.member) {
+                saved = true;
+                createdMember = data.member;
+              }
+            }
           }
-        } catch (err) {
-          alert('Network or server error');
+        } catch (_) {}
+
+        // Fallback: Direct Supabase insert (Netlify / static hosting)
+        if (!saved) {
+          try {
+            const nextCode = "NFT-" + Math.floor(1000 + Math.random() * 9000);
+            const sbRes = await fetch(`${SB_URL}/rest/v1/members`, {
+              method: 'POST',
+              headers: { ...SB_HEADERS, "Prefer": "return=representation" },
+              body: JSON.stringify([{
+                member_id: nextCode,
+                name,
+                mobile,
+                plan_type,
+                start_date,
+                expiry_date,
+                address,
+                gender: "Male"
+              }])
+            });
+            if (sbRes.ok) {
+              const list = await sbRes.json();
+              if (Array.isArray(list) && list.length > 0) {
+                saved = true;
+                createdMember = list[0];
+              }
+            }
+          } catch (sbErr) {
+            console.error("Direct Supabase registration error:", sbErr);
+          }
+        }
+
+        if (saved) {
+          alert(`Member ${createdMember?.name || name} enrolled successfully with expiry on ${formatToDMY(createdMember?.expiry_date || expiry_date)}!`);
+          document.getElementById('registration-form').reset();
+          document.getElementById('reg-start-date').value = today;
+          updateCalculatedExpiry();
+          switchView('members');
+          loadMembers();
+        } else {
+          alert("Registration failed. Please check network connectivity.");
         }
       }
 
       async function deleteMember(id) {
         if (!confirm('Are you sure you want to delete this member?')) return;
-        await fetch(`/api/members/${id}`, { method: 'DELETE' });
+        try {
+          await fetch(`/api/members/${id}`, { method: 'DELETE' });
+        } catch (_) {}
+        try {
+          await fetch(`${SB_URL}/rest/v1/members?id=eq.${id}`, { method: 'DELETE', headers: SB_HEADERS });
+        } catch (_) {}
         loadMembers();
       }
 
