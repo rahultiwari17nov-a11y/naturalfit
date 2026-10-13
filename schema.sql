@@ -44,7 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_members_expiry_date ON members(expiry_date);
 -- Stores real-time check-in logs, status (valid, expired, duplicate, denied), and timestamps
 CREATE TABLE IF NOT EXISTS attendance (
     id SERIAL PRIMARY KEY,
-    member_id INTEGER NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    member_id VARCHAR(100) NOT NULL REFERENCES members(member_id) ON DELETE CASCADE,
     check_in_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(50) NOT NULL, -- 'valid', 'expired', 'duplicate', 'denied'
     reception_notes TEXT

@@ -3,11 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="NFT Gym" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="manifest" href="/manifest.json" />
     <title>NFT Gym - CRM Portal</title>
     <link rel="stylesheet" href="/style.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="/pwa-register.js" defer></script>
     <style>
       .layout-container { max-width: 1200px; margin: 0 auto; padding: 20px; }
       .header-nav { display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding: 15px 0; margin-bottom: 25px; }
@@ -52,6 +60,10 @@
           <button class="tab-btn" id="tab-members-btn" onclick="switchView('members')">Member List</button>
           <button class="tab-btn" id="tab-register-btn" onclick="switchView('register')">+ New Registration</button>
           <button class="tab-btn active" id="tab-attendance-btn" onclick="switchView('attendance')">Attendance Tracker</button>
+          <button class="tab-btn" id="crm-download-pwa-btn" onclick="window.triggerPWAInstall && window.triggerPWAInstall()" style="background: rgba(34, 197, 94, 0.15); color: #22c55e; border-color: rgba(34, 197, 94, 0.4); display: inline-flex; align-items: center; justify-content: center; gap: 6px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/></svg>
+            Download App
+          </button>
           <a href="/" class="btn-secondary" style="padding: 8px 14px; font-size: 13px;">Admin Login</a>
         </div>
       </header>
@@ -317,18 +329,24 @@
         // Direct Supabase fallback (Netlify / static hosting)
         if (!Array.isArray(data) || data.length === 0) {
           try {
-            const sbRes = await fetch(`${SB_URL}/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes&order=id.desc&limit=50`, {
+            const todayParts = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+            const y = todayParts.find(p => p.type === 'year').value;
+            const m = todayParts.find(p => p.type === 'month').value;
+            const d = todayParts.find(p => p.type === 'day').value;
+            const sIso = new Date(`${y}-${m}-${d}T00:00:00+05:30`).toISOString();
+            const eIso = new Date(`${y}-${m}-${d}T23:59:59.999+05:30`).toISOString();
+            const sbRes = await fetch(`${SB_URL}/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes,members(id,member_id,name,mobile)&check_in_time=gte.${encodeURIComponent(sIso)}&check_in_time=lte.${encodeURIComponent(eIso)}&order=check_in_time.desc`, {
               headers: SB_HEADERS
             });
             if (sbRes.ok) {
               const raw = await sbRes.json();
               if (Array.isArray(raw)) {
                 data = raw.map(a => {
-                  const m = (currentMembers || []).find(x => x.id === a.member_id || String(x.member_id) === String(a.member_id));
+                  const mObj = a.members || (currentMembers || []).find(x => x.id === a.member_id || String(x.member_id) === String(a.member_id));
                   return {
                     ...a,
-                    name: m ? m.name : `Member #${a.member_id}`,
-                    member_id: m ? (m.member_id || m.id) : a.member_id
+                    name: mObj ? mObj.name : `Member #${a.member_id}`,
+                    member_id: mObj ? (mObj.member_id || mObj.id) : a.member_id
                   };
                 });
               }
@@ -340,12 +358,29 @@
 
         const tbody = document.getElementById('attendance-body');
         if (tbody) {
-          tbody.innerHTML = (Array.isArray(data) ? data : []).map(a => `<tr>
-            <td>${a.check_in_time || ''}</td>
-            <td>${escapeHtml(a.name || `Member #${a.member_id}`)}</td>
-            <td>${escapeHtml(String(a.member_id || ''))}</td>
-            <td><span class="${a.status === 'valid' ? 'badge-active' : 'badge-expired'}">${a.status || ''}</span></td>
-          </tr>`).join('');
+          tbody.innerHTML = (Array.isArray(data) ? data : []).map(a => {
+            let dtFormatted = "";
+            if (a.check_in_time) {
+              try {
+                let s = String(a.check_in_time).trim();
+                if (s.includes(" ") && !s.includes("T")) s = s.replace(" ", "T");
+                if (!s.endsWith("Z") && !/[+-]\d{2}(:?\d{2})?$/.test(s)) s += "Z";
+                const dObj = new Date(s);
+                const parts = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' }).formatToParts(dObj);
+                const dd = parts.find(p => p.type === 'day')?.value || '01';
+                const mm = parts.find(p => p.type === 'month')?.value || '01';
+                const yy = parts.find(p => p.type === 'year')?.value || '1970';
+                const timeStr = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(dObj);
+                dtFormatted = `${dd}:${mm}:${yy} ${timeStr}`;
+              } catch (_) { dtFormatted = a.check_in_time; }
+            }
+            return `<tr>
+              <td>${dtFormatted}</td>
+              <td>${escapeHtml(a.name || `Member #${a.member_id}`)}</td>
+              <td>${escapeHtml(String(a.member_id || ''))}</td>
+              <td><span class="${a.status === 'valid' ? 'badge-active' : 'badge-expired'}">${a.status || ''}</span></td>
+            </tr>`;
+          }).join('');
         }
         if (Array.isArray(data)) {
           document.getElementById('stat-scans').innerText = data.length;

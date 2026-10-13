@@ -1206,23 +1206,59 @@ async function startServer() {
   app.get("/api/attendance", async (req, res) => {
     try {
       const db = await getDb();
-      const { start_date, end_date, status, q } = req.query;
+      const { start_date, end_date, start_iso, end_iso, status, q } = req.query;
       let sql = `
-        SELECT a.*, m.name, m.member_id, m.card_uid, m.plan_type, m.expiry_date 
+        SELECT a.id, a.check_in_time, a.status, a.reception_notes,
+               m.id AS member_db_id, m.member_id, m.name, m.plan_type, m.expiry_date, m.mobile, m.profile_picture 
         FROM attendance a
         JOIN members m ON a.member_id = m.id
         WHERE 1=1
       `;
       const params = [];
-      if (start_date) { sql += " AND (date(a.check_in_time) >= date(?) OR a.check_in_time >= ?)"; params.push(start_date, start_date + " 00:00:00"); }
-      if (end_date) { sql += " AND (date(a.check_in_time) <= date(?) OR a.check_in_time <= ?)"; params.push(end_date, end_date + " 23:59:59"); }
+      if (start_iso) {
+        sql += " AND a.check_in_time >= ?";
+        params.push(start_iso);
+      } else if (start_date) {
+        const sIso = new Date(`${start_date}T00:00:00+05:30`).toISOString();
+        sql += " AND (a.check_in_time >= ? OR date(a.check_in_time) >= date(?))";
+        params.push(sIso, start_date);
+      }
+      if (end_iso) {
+        sql += " AND a.check_in_time <= ?";
+        params.push(end_iso);
+      } else if (end_date) {
+        const eIso = new Date(`${end_date}T23:59:59.999+05:30`).toISOString();
+        sql += " AND (a.check_in_time <= ? OR date(a.check_in_time) <= date(?))";
+        params.push(eIso, end_date);
+      }
       if (status && status !== "all") { sql += " AND a.status = ?"; params.push(status); }
-      if (q) { sql += " AND (m.name LIKE ? OR m.member_id LIKE ? OR m.card_uid LIKE ?)"; params.push(`%${q}%`, `%${q}%`, `%${q}%`); }
+      if (q) { sql += " AND (m.name LIKE ? OR m.member_id LIKE ?)"; params.push(`%${q}%`, `%${q}%`); }
       sql += " ORDER BY a.check_in_time DESC";
       const stmt = db.prepare(sql);
       stmt.bind(params);
       const attendance = [];
-      while (stmt.step()) attendance.push(stmt.getAsObject());
+      while (stmt.step()) {
+        const row = stmt.getAsObject();
+        let normalizedCheckInTime = row.check_in_time;
+        if (normalizedCheckInTime) {
+          let s = String(normalizedCheckInTime).trim();
+          if (s.includes(" ") && !s.includes("T")) s = s.replace(" ", "T");
+          if (!s.endsWith("Z") && !/[+-]\d{2}(:?\d{2})?$/.test(s)) s += "Z";
+          normalizedCheckInTime = s;
+        }
+        attendance.push({
+          id: row.id,
+          member_id: row.member_id,
+          name: row.name,
+          plan_type: row.plan_type,
+          expiry_date: row.expiry_date,
+          mobile: row.mobile,
+          profile_picture: row.profile_picture,
+          status: row.status,
+          check_in_time: normalizedCheckInTime,
+          reception_notes: row.reception_notes
+        });
+      }
       stmt.free();
       res.json(attendance);
     } catch (err) {
@@ -1241,19 +1277,111 @@ async function startServer() {
     } catch (e) {
       console.warn("Could not create Supabase client:", e.message);
     }
-    return null;
   };
+
+  app.post("/api/attendance/delete-range", async (req, res) => {
+    try {
+      const { start_date, end_date, start_iso, end_iso, start_ist, end_ist, confirmation } = req.body || {};
+      if (confirmation !== "DELETE") {
+        return res.status(400).json({ error: 'Confirmation failed. You must enter "DELETE" to confirm deletion.' });
+      }
+
+      if (!start_date && !start_iso) {
+        return res.status(400).json({ error: "Start date is required for deletion." });
+      }
+
+      const sDate = start_date || (start_iso ? start_iso.split("T")[0] : "");
+      const eDate = end_date || (end_iso ? end_iso.split("T")[0] : sDate);
+
+      const sIso = start_iso || new Date(`${sDate}T00:00:00+05:30`).toISOString();
+      const eIso = end_iso || new Date(`${eDate}T23:59:59.999+05:30`).toISOString();
+      const sIst = start_ist || `${sDate}T00:00:00.000`;
+      const eIst = end_ist || `${eDate}T23:59:59.999`;
+
+      const db = await getDb();
+
+      // Count matching local records before delete
+      let localDeletedCount = 0;
+      try {
+        const countStmt = db.prepare(`
+          SELECT COUNT(*) as cnt FROM attendance 
+          WHERE (check_in_time >= ? AND check_in_time <= ?)
+             OR (check_in_time >= ? AND check_in_time <= ?)
+             OR (date(check_in_time) >= date(?) AND date(check_in_time) <= date(?))
+        `);
+        countStmt.bind([sIso, eIso, sIst, eIst, sDate, eDate]);
+        if (countStmt.step()) {
+          localDeletedCount = countStmt.getAsObject().cnt || 0;
+        }
+        countStmt.free();
+      } catch (_) {}
+
+      // Delete from local SQLite database
+      db.run(`
+        DELETE FROM attendance 
+        WHERE (check_in_time >= ? AND check_in_time <= ?)
+           OR (check_in_time >= ? AND check_in_time <= ?)
+           OR (date(check_in_time) >= date(?) AND date(check_in_time) <= date(?))
+      `, [sIso, eIso, sIst, eIst, sDate, eDate]);
+      saveDatabase();
+
+      // Delete from Supabase (both by IST wall-clock bounds and UTC bounds)
+      let sbDeletedCount = 0;
+      try {
+        const sb = getSupabaseServerClient();
+        if (sb) {
+          const { data: delIst, error: sbErr1 } = await sb
+            .from("attendance")
+            .delete()
+            .gte("check_in_time", sIst)
+            .lte("check_in_time", eIst)
+            .select();
+          if (!sbErr1 && Array.isArray(delIst)) sbDeletedCount += delIst.length;
+
+          const { data: delUtc, error: sbErr2 } = await sb
+            .from("attendance")
+            .delete()
+            .gte("check_in_time", sIso)
+            .lte("check_in_time", eIso)
+            .select();
+          if (!sbErr2 && Array.isArray(delUtc)) sbDeletedCount += delUtc.length;
+
+          const { data: delDay } = await sb
+            .from("attendance")
+            .delete()
+            .gte("check_in_time", `${sDate}T00:00:00`)
+            .lte("check_in_time", `${eDate}T23:59:59.999`)
+            .select();
+          if (Array.isArray(delDay)) sbDeletedCount += delDay.length;
+        }
+      } catch (errSb) {
+        console.warn("[Supabase Delete Range Exception]:", errSb.message);
+      }
+
+      console.log(`[Attendance Range Deleted]: From ${sDate} to ${eDate}. Local: ${localDeletedCount}, Supabase: ${sbDeletedCount}`);
+      res.json({
+        success: true,
+        message: `Successfully deleted attendance records from ${sDate} to ${eDate}.`,
+        local_deleted: localDeletedCount,
+        supabase_deleted: sbDeletedCount
+      });
+    } catch (err) {
+      console.error("Delete range error:", err);
+      res.status(500).json({ error: "Failed to delete attendance logs: " + (err.message || "Unknown error") });
+    }
+  });
 
   app.post("/api/attendance/check-in", async (req, res) => {
     try {
-      const { identifier, notes } = req.body || {};
-      if (!identifier || !String(identifier).trim()) {
-        return res.status(400).json({ error: "Card UID or Member ID is required." });
+      const rawInput = req.body?.member_id || req.body?.identifier || "";
+      if (!rawInput || !String(rawInput).trim()) {
+        return res.status(400).json({ error: "Member ID is required." });
       }
-      const rawId = String(identifier).trim();
+      const rawId = String(rawInput).trim();
+      const notes = req.body?.notes || "";
       const db = await getDb();
       
-      let member = db.prepare("SELECT * FROM members WHERE card_uid = ? OR member_id = ? OR mobile = ? OR id = ?").getAsObject([rawId, rawId, rawId, rawId]);
+      let member = db.prepare("SELECT * FROM members WHERE member_id = ? OR id = ? OR mobile = ?").getAsObject([rawId, rawId, rawId]);
       
       if (!member || !member.id) {
         try {
@@ -1291,14 +1419,41 @@ async function startServer() {
       }
 
       if (!member || !member.id) {
-        return res.status(404).json({ error: `Unregistered Card / Member not found for "${rawId}".`, status: "unregistered" });
+        return res.status(404).json({ error: `Member ID "${rawId}" not found in database.`, status: "unregistered" });
       }
 
-      // Policy 2 — Strict Duplicate Attendance Block (1 Valid Check-in per Day)
+      // Policy 1 — Strict Present Day Attendance Policy (Block yesterday and future days)
       const now = new Date();
-      const todayIso = now.toISOString().split("T")[0];
-      const dupStmt = db.prepare("SELECT * FROM attendance WHERE member_id = ? AND status = 'valid' AND (date(check_in_time) = date('now') OR date(check_in_time) = date(?) OR check_in_time LIKE ?)");
-      dupStmt.bind([member.id, todayIso, `${todayIso}%`]);
+      // Calculate IST today start/end
+      const parts = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+      const yIST = parts.find(p => p.type === 'year')?.value || '1970';
+      const mIST = parts.find(p => p.type === 'month')?.value || '01';
+      const dIST = parts.find(p => p.type === 'day')?.value || '01';
+      const todayISTStr = `${yIST}-${mIST}-${dIST}`;
+      const startTodayISTIso = new Date(`${todayISTStr}T00:00:00+05:30`).toISOString();
+      const endTodayISTIso = new Date(`${todayISTStr}T23:59:59.999+05:30`).toISOString();
+
+      const reqDate = req.body?.date || req.body?.check_in_date || req.body?.target_date;
+      if (reqDate) {
+        const cleanReqDate = String(reqDate).trim().split("T")[0];
+        if (cleanReqDate < todayISTStr) {
+          return res.status(400).json({
+            error: "Mark attendance disabled for yesterday: Attendance can only be marked for the present day (Today).",
+            status: "blocked"
+          });
+        }
+        if (cleanReqDate > todayISTStr) {
+          return res.status(400).json({
+            error: "Mark attendance disabled for future days: Attendance can only be marked for the present day (Today).",
+            status: "blocked"
+          });
+        }
+      }
+
+      // Policy 2 — Strict Duplicate Attendance Block (1 Valid Check-in per Day in IST)
+
+      const dupStmt = db.prepare("SELECT * FROM attendance WHERE member_id = ? AND status = 'valid' AND ((check_in_time >= ? AND check_in_time <= ?) OR date(check_in_time) = date(?))");
+      dupStmt.bind([member.id, startTodayISTIso, endTodayISTIso, todayISTStr]);
       let existingValid = null;
       if (dupStmt.step()) {
         existingValid = dupStmt.getAsObject();
@@ -1308,9 +1463,12 @@ async function startServer() {
       if (existingValid && existingValid.id) {
         let timeStr = "earlier today";
         if (existingValid.check_in_time) {
-          const raw = String(existingValid.check_in_time);
-          if (raw.includes(" ")) timeStr = raw.split(" ")[1];
-          else if (raw.includes("T")) timeStr = raw.split("T")[1].split(".")[0];
+          try {
+            timeStr = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(existingValid.check_in_time));
+          } catch (_) {
+            const raw = String(existingValid.check_in_time);
+            timeStr = raw.includes(" ") ? raw.split(" ")[1] : raw;
+          }
         }
         return res.status(409).json({ 
           error: `Duplicate Attendance Blocked: ${member.name} already checked in today at ${timeStr}. Multiple check-ins on the same day are not permitted.`,
@@ -1326,18 +1484,56 @@ async function startServer() {
       todayZero.setHours(0, 0, 0, 0);
       expDate.setHours(0, 0, 0, 0);
 
+function getISTIsoString(d = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(d);
+  const year = parts.find(p => p.type === "year")?.value || "1970";
+  const month = parts.find(p => p.type === "month")?.value || "01";
+  const day = parts.find(p => p.type === "day")?.value || "01";
+  let hour = parts.find(p => p.type === "hour")?.value || "00";
+  if (hour === "24") hour = "00";
+  const minute = parts.find(p => p.type === "minute")?.value || "00";
+  const second = parts.find(p => p.type === "second")?.value || "00";
+  const ms = String(d.getUTCMilliseconds()).padStart(3, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}`;
+}
+
       if (expDate < todayZero) {
-        db.run("INSERT INTO attendance (member_id, status, reception_notes) VALUES (?, 'expired', ?)", [member.id, notes || "Front desk expired attempt"]);
+        db.run("INSERT INTO attendance (member_id, check_in_time, status, reception_notes) VALUES (?, ?, 'expired', ?)", [member.id, getISTIsoString(now), notes || "Front desk expired attempt"]);
         saveDatabase();
         try {
           const sb = getSupabaseServerClient();
           if (sb) {
-            sb.from("attendance").insert([{
-              member_id: member.id,
-              status: "expired",
-              check_in_time: now.toISOString(),
-              reception_notes: notes || "Front desk expired attempt"
-            }]).then(({ error }) => { if (error) console.warn("[Supabase Attendance Sync Note]:", error.message); }).catch(() => {});
+            (async () => {
+              const realMemberId = String(member.member_id || member.id);
+              const { error } = await sb.from("attendance").insert([{
+                member_id: realMemberId,
+                status: "expired",
+                check_in_time: getISTIsoString(now),
+                reception_notes: notes || "Front desk expired attempt"
+              }]);
+              if (error && error.message && error.message.includes("foreign key")) {
+                let surrogateId = member.id;
+                try {
+                  const { data: sbm } = await sb.from("members").select("id").or(`member_id.eq.${realMemberId},mobile.eq.${member.mobile},id.eq.${member.id}`).limit(1);
+                  if (sbm && sbm.length > 0) surrogateId = sbm[0].id;
+                } catch (_) {}
+                await sb.from("attendance").insert([{
+                  member_id: surrogateId,
+                  status: "expired",
+                  check_in_time: getISTIsoString(now),
+                  reception_notes: notes || "Front desk expired attempt"
+                }]);
+              }
+            })().catch(() => {});
           }
         } catch (_) {}
         return res.status(200).json({ 
@@ -1350,7 +1546,7 @@ async function startServer() {
       }
 
       // Valid entry
-      db.run("INSERT INTO attendance (member_id, status, reception_notes) VALUES (?, 'valid', ?)", [member.id, notes || ""]);
+      db.run("INSERT INTO attendance (member_id, check_in_time, status, reception_notes) VALUES (?, ?, 'valid', ?)", [member.id, getISTIsoString(now), notes || ""]);
       saveDatabase();
 
       // Realtime dual-write sync to Supabase table 'attendance'
@@ -1358,24 +1554,28 @@ async function startServer() {
         const sb = getSupabaseServerClient();
         if (sb) {
           (async () => {
-            let sbMemId = member.id;
-            try {
-              const memCode = String(member.member_id || member.card_uid || member.id);
-              const { data: sbm } = await sb.from("members").select("id").or(`member_id.eq.${memCode},mobile.eq.${member.mobile},id.eq.${member.id}`).limit(1);
-              if (sbm && sbm.length > 0) {
-                sbMemId = sbm[0].id;
-              }
-            } catch (_) {}
+            const realMemberId = String(member.member_id || member.id);
             const { error: sbErr } = await sb.from("attendance").insert([{
-              member_id: sbMemId,
+              member_id: realMemberId,
               status: "valid",
-              check_in_time: now.toISOString(),
+              check_in_time: getISTIsoString(now),
               reception_notes: notes || "Front desk verification"
             }]);
-            if (sbErr) {
-              console.warn("[Supabase Attendance Sync Note]:", sbErr.message);
-            } else {
-              console.log("[Supabase Attendance Sync Success]: Record saved to Supabase attendance table for member", sbMemId);
+            if (sbErr && sbErr.message && sbErr.message.includes("foreign key")) {
+              let surrogateId = member.id;
+              try {
+                const { data: sbm } = await sb.from("members").select("id").or(`member_id.eq.${realMemberId},mobile.eq.${member.mobile},id.eq.${member.id}`).limit(1);
+                if (sbm && sbm.length > 0) surrogateId = sbm[0].id;
+              } catch (_) {}
+              await sb.from("attendance").insert([{
+                member_id: surrogateId,
+                status: "valid",
+                check_in_time: getISTIsoString(now),
+                reception_notes: notes || "Front desk verification"
+              }]);
+              console.log("[Supabase Attendance Sync Success (surrogate fallback)]:", surrogateId);
+            } else if (!sbErr) {
+              console.log("[Supabase Attendance Sync Success]: Record saved with member_id", realMemberId);
             }
           })().catch(e => console.warn("[Supabase Attendance Sync Error]:", e.message));
         }
@@ -1383,7 +1583,20 @@ async function startServer() {
         console.warn("Supabase background attendance sync exception:", err);
       }
 
-      res.json({ success: true, member, status: "valid", timestamp: now.toISOString() });
+      const partsTime = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(now);
+      const istHour = partsTime.find(p => p.type === 'hour')?.value || '00';
+      const istMin = partsTime.find(p => p.type === 'minute')?.value || '00';
+      const istSec = partsTime.find(p => p.type === 'second')?.value || '00';
+      const istTimeStr = `${istHour === '24' ? '00' : istHour}:${istMin}:${istSec}`;
+
+      res.json({ 
+        success: true, 
+        member, 
+        status: "valid", 
+        timestamp: getISTIsoString(now), 
+        check_in_time: getISTIsoString(now), 
+        ist_time: istTimeStr 
+      });
     } catch (err) {
       console.error("Check-in error:", err);
       res.status(500).json({ error: "Failed check-in: " + (err.message || "Unknown error") });
@@ -1398,7 +1611,12 @@ async function startServer() {
         return res.status(400).json({ error: "Supabase client could not be initialized." });
       }
       const db = await getDb();
-      const stmt = db.prepare("SELECT * FROM attendance ORDER BY id ASC");
+      const stmt = db.prepare(`
+        SELECT a.*, COALESCE(m.member_id, CAST(a.member_id AS TEXT)) as real_member_code
+        FROM attendance a
+        LEFT JOIN members m ON (a.member_id = m.id OR CAST(a.member_id AS TEXT) = CAST(m.member_id AS TEXT))
+        ORDER BY a.id ASC
+      `);
       const localRows = [];
       while (stmt.step()) localRows.push(stmt.getAsObject());
       stmt.free();
@@ -1408,7 +1626,7 @@ async function startServer() {
       }
 
       const rowsToInsert = localRows.map(r => ({
-        member_id: r.member_id,
+        member_id: String(r.real_member_code || r.member_id),
         status: r.status || "valid",
         check_in_time: r.check_in_time || new Date().toISOString(),
         reception_notes: r.reception_notes || ""

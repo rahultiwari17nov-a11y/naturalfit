@@ -3,6 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="NFT Gym" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="manifest" href="/manifest.json" />
     <title>NFT Gym - Be An Inspiration</title>
     <meta name="description" content="NFT Gym - Professional Fitness Center & Member Management CRM. Be An Inspiration." />
     <meta property="og:title" content="NFT Gym - Be An Inspiration" />
@@ -12,6 +19,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="/pwa-register.js" defer></script>
     <script>
       window.__fmtDMY = function(val) {
         if (!val && val !== 0) return "";
@@ -19,6 +27,10 @@
         if (!s || s === "N/A" || s === "undefined" || s === "null" || s === "--" || s === "—") return s;
         if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) {
           var p = s.split("-");
+          return p[0].padStart(2, "0") + "-" + p[1].padStart(2, "0") + "-" + p[2];
+        }
+        if (/^\d{1,2}[:\/]\d{1,2}[:\/]\d{4}$/.test(s)) {
+          var p = s.split(/[:\/]/);
           return p[0].padStart(2, "0") + "-" + p[1].padStart(2, "0") + "-" + p[2];
         }
         if (/^\d{4}-\d{1,2}-\d{1,2}/.test(s)) {

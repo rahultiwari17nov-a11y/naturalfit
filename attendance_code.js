@@ -1,3 +1,122 @@
+const formatISTDate = (val) => {
+  if (!val && val !== 0) return "";
+  let s = String(val).trim();
+  if (!s || s === "N/A" || s === "--" || s === "undefined" || s === "null") return "";
+
+  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) return s;
+  if (/^(\d{2})[:\/](\d{2})[:\/](\d{4})$/.test(s)) return s.replace(/[:\/]/g, "-");
+
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    return `${m[3]}-${m[2]}-${m[1]}`;
+  }
+
+  let d;
+  if (val instanceof Date) d = val;
+  else {
+    let clean = s;
+    if (clean.includes(" ") && !clean.includes("T")) clean = clean.replace(" ", "T");
+    if (!clean.endsWith("Z") && !/[+-]\d{2}(:?\d{2})?$/.test(clean)) clean += "+05:30";
+    d = new Date(clean);
+  }
+
+  if (isNaN(d.getTime())) d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  }).formatToParts(d);
+  const day = parts.find(p => p.type === "day")?.value || "01";
+  const month = parts.find(p => p.type === "month")?.value || "01";
+  const year = parts.find(p => p.type === "year")?.value || "1970";
+  return `${day}-${month}-${year}`;
+};
+
+const formatISTTime = (val) => {
+  if (!val && val !== 0) return "";
+  let s = String(val).trim();
+  if (!s || s === "N/A" || s === "--" || s === "undefined" || s === "null") return "";
+
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(s) && !s.includes("-") && !s.includes("/")) {
+    const parts = s.split(":");
+    return `${parts[0].padStart(2, "0")}:${parts[1].padStart(2, "0")}:${(parts[2] || "00").padStart(2, "0")}`;
+  }
+
+  const tm = s.match(/[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (tm) {
+    return `${tm[1]}:${tm[2]}:${tm[3] || "00"}`;
+  }
+
+  let d;
+  if (val instanceof Date) d = val;
+  else d = new Date(s);
+
+  if (isNaN(d.getTime())) return "";
+
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(d);
+  let h = parts.find(p => p.type === "hour")?.value || "00";
+  if (h === "24") h = "00";
+  const m = parts.find(p => p.type === "minute")?.value || "00";
+  const sec = parts.find(p => p.type === "second")?.value || "00";
+  return `${h}:${m}:${sec}`;
+};
+
+const getISTIsoString = (d = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(d);
+  const year = parts.find(p => p.type === "year")?.value || "1970";
+  const month = parts.find(p => p.type === "month")?.value || "01";
+  const day = parts.find(p => p.type === "day")?.value || "01";
+  let hour = parts.find(p => p.type === "hour")?.value || "00";
+  if (hour === "24") hour = "00";
+  const minute = parts.find(p => p.type === "minute")?.value || "00";
+  const second = parts.find(p => p.type === "second")?.value || "00";
+  const ms = String(d.getUTCMilliseconds()).padStart(3, "0");
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.${ms}`;
+};
+
+const getISTDateParts = (d = new Date()) => {
+  const parts = new Intl.DateTimeFormat("en-IN", {
+    timeZone: "Asia/Kolkata",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(d);
+  const year = parseInt(parts.find(p => p.type === "year")?.value || "1970", 10);
+  const month = parseInt(parts.find(p => p.type === "month")?.value || "1", 10);
+  const day = parseInt(parts.find(p => p.type === "day")?.value || "1", 10);
+  return { year, month, day };
+};
+
+const getISTDayBoundary = (offsetDays = 0) => {
+  const { year, month, day } = getISTDateParts(new Date());
+  const d = new Date(Date.UTC(year, month - 1, day + offsetDays));
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const dateStr = `${y}-${m}-${dd}`;
+  const startIso = `${dateStr}T00:00:00.000`;
+  const endIso = `${dateStr}T23:59:59.999`;
+  return { dateStr, startIso, endIso };
+};
+
 ;
 ;
 // --- ATTENDANCE & RFID/BARCODE SCANNER MODULE ---
@@ -88,7 +207,7 @@ const MemberICardModal = ({ member, onClose }) => {
       setTimeout(() => {
         const canvas = document.getElementById("card-barcode-canvas");
         if (canvas) {
-          drawBarcode128(canvas, member.card_uid || `NFT-${member.member_id || member.id}`);
+          drawBarcode128(canvas, String(member.member_id || member.id));
         }
       }, 100);
     }
@@ -434,26 +553,40 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
   }, [members]);
 
   const [timeframeMode, setTimeframeMode] = fe.useState("single");
-  const todayStr = fe.useMemo(() => new Date().toISOString().split("T")[0], []);
-  const yesterdayStr = fe.useMemo(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().split("T")[0];
+  const [activePreset, setActivePreset] = fe.useState("today");
+
+  const todayBoundary = fe.useMemo(() => getISTDayBoundary(0), []);
+  const yesterdayBoundary = fe.useMemo(() => getISTDayBoundary(-1), []);
+  const last7Boundary = fe.useMemo(() => getISTDayBoundary(-6), []);
+  const thisMonthStartStr = fe.useMemo(() => {
+    const { year, month } = getISTDateParts(new Date());
+    return `${year}-${String(month).padStart(2, "0")}-01`;
   }, []);
-  
-  const [singleDate, setSingleDate] = fe.useState(todayStr);
-  const [rangeStart, setRangeStart] = fe.useState(() => {
-    const d = new Date();
-    d.setDate(d.getDate() - 7);
-    return d.toISOString().split("T")[0];
-  });
-  const [rangeEnd, setRangeEnd] = fe.useState(todayStr);
+
+  const todayStr = todayBoundary.dateStr;
+  const yesterdayStr = yesterdayBoundary.dateStr;
+
+  const [singleDate, setSingleDate] = fe.useState(todayBoundary.dateStr);
+  const [rangeStart, setRangeStart] = fe.useState(last7Boundary.dateStr);
+  const [rangeEnd, setRangeEnd] = fe.useState(todayBoundary.dateStr);
+
+  const isPresentDay = timeframeMode === "single" && (activePreset === "today" || singleDate === todayStr);
+  const isYesterday = timeframeMode === "single" && (activePreset === "yesterday" || singleDate === yesterdayStr);
+  const isFutureDay = timeframeMode === "single" && singleDate > todayStr;
+  const isPastDay = timeframeMode === "single" && singleDate < todayStr && !isYesterday;
 
   const [statusFilter, setStatusFilter] = fe.useState("all");
   const [searchQuery, setSearchQuery] = fe.useState("");
 
   const [showManualModal, setShowManualModal] = fe.useState(!1);
   const [showReportModal, setShowReportModal] = fe.useState(!1);
+  const [showDeleteModal, setShowDeleteModal] = fe.useState(!1);
+  const [deleteStartDate, setDeleteStartDate] = fe.useState(todayBoundary.dateStr);
+  const [deleteEndDate, setDeleteEndDate] = fe.useState(todayBoundary.dateStr);
+  const [deleteConfirmText, setDeleteConfirmText] = fe.useState("");
+  const [isDeletingLogs, setIsDeletingLogs] = fe.useState(!1);
+  const [deleteModalError, setDeleteModalError] = fe.useState(null);
+
   const [selectedCardMember, setSelectedCardMember] = fe.useState(null);
 
   // Manual Check-in Form state matching ERP home page pB
@@ -532,13 +665,48 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
   const fetchLogs = fe.useCallback(async () => {
     setIsLoading(!0);
     let loadedFromApi = false;
-    try {
-      let url = "/api/attendance?";
+
+    // Calculate exact IST ISO start and end boundaries
+    let startIso = "";
+    let endIso = "";
+    let sDate = "";
+    let eDate = "";
+
+    if (activePreset === "today") {
+      const b = getISTDayBoundary(0);
+      startIso = b.startIso; endIso = b.endIso; sDate = b.dateStr; eDate = b.dateStr;
+    } else if (activePreset === "yesterday") {
+      const b = getISTDayBoundary(-1);
+      startIso = b.startIso; endIso = b.endIso; sDate = b.dateStr; eDate = b.dateStr;
+    } else if (activePreset === "last7") {
+      const start = getISTDayBoundary(-6);
+      const end = getISTDayBoundary(0);
+      startIso = start.startIso; endIso = end.endIso; sDate = start.dateStr; eDate = end.dateStr;
+    } else if (activePreset === "last30") {
+      const start = getISTDayBoundary(-29);
+      const end = getISTDayBoundary(0);
+      startIso = start.startIso; endIso = end.endIso; sDate = start.dateStr; eDate = end.dateStr;
+    } else if (activePreset === "thisMonth") {
+      const { year, month } = getISTDateParts(new Date());
+      const m = String(month).padStart(2, "0");
+      const startStr = `${year}-${m}-01`;
+      startIso = `${startStr}T00:00:00.000`;
+      endIso = getISTDayBoundary(0).endIso;
+      sDate = startStr; eDate = getISTDayBoundary(0).dateStr;
+    } else {
       if (timeframeMode === "single") {
-        url += `start_date=${singleDate}&end_date=${singleDate}`;
+        startIso = `${singleDate}T00:00:00.000`;
+        endIso = `${singleDate}T23:59:59.999`;
+        sDate = singleDate; eDate = singleDate;
       } else {
-        url += `start_date=${rangeStart}&end_date=${rangeEnd}`;
+        startIso = `${rangeStart}T00:00:00.000`;
+        endIso = `${rangeEnd}T23:59:59.999`;
+        sDate = rangeStart; eDate = rangeEnd;
       }
+    }
+
+    try {
+      let url = `/api/attendance?start_iso=${encodeURIComponent(startIso)}&end_iso=${encodeURIComponent(endIso)}&start_date=${sDate}&end_date=${eDate}`;
       if (statusFilter !== "all") {
         url += `&status=${statusFilter}`;
       }
@@ -559,9 +727,10 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
     } catch(e) {
       console.warn("Express /api/attendance call failed, trying direct Supabase fallback:", e);
     }
+
     if (!loadedFromApi) {
       try {
-        let sbUrl = "https://kkhnpgztzfpmjltsuhmo.supabase.co/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes&order=id.desc&limit=50";
+        let sbUrl = `https://kkhnpgztzfpmjltsuhmo.supabase.co/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes,created_at,members(id,member_id,name,mobile,plan_type,expiry_date,profile_picture)&check_in_time=gte.${encodeURIComponent(startIso)}&check_in_time=lte.${encodeURIComponent(endIso)}&order=check_in_time.desc`;
         if (statusFilter !== "all") {
           sbUrl += `&status=eq.${encodeURIComponent(statusFilter)}`;
         }
@@ -574,17 +743,33 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         if (sbRes.ok) {
           const rawLogs = await sbRes.json();
           if (Array.isArray(rawLogs)) {
-            const enriched = rawLogs.map(log => {
-              const m = (allMembersList || []).find(mem => mem.id === log.member_id || String(mem.member_id) === String(log.member_id));
+            let enriched = rawLogs.map(log => {
+              const m = log.members || (allMembersList || []).find(mem => mem.id === log.member_id || String(mem.member_id) === String(log.member_id));
+              const memberCode = (m && m.member_id) ? String(m.member_id) : (log.member_id ? String(log.member_id) : "--");
+              const memberName = (m && m.name) ? m.name : (log.name || `Member #${memberCode}`);
+              const planType = (m && m.plan_type) ? m.plan_type : (log.plan_type || "Regular");
+              const expDate = (m && m.expiry_date) ? m.expiry_date : (log.expiry_date || "");
+              const mobile = (m && m.mobile) ? m.mobile : (log.mobile || "");
+              const pic = (m && m.profile_picture) ? m.profile_picture : (log.profile_picture || "");
               return {
                 ...log,
-                member_name: m ? m.name : `Member #${log.member_id}`,
-                member_code: m ? (m.member_id || m.card_uid) : String(log.member_id),
-                plan_type: m ? m.plan_type : "Standard",
-                profile_picture: m ? m.profile_picture : "",
-                mobile: m ? m.mobile : ""
+                id: log.id,
+                member_id: memberCode,
+                name: memberName,
+                plan_type: planType,
+                expiry_date: expDate,
+                mobile: mobile,
+                profile_picture: pic
               };
             });
+            if (searchQuery.trim()) {
+              const q = searchQuery.toLowerCase().trim();
+              enriched = enriched.filter(l => 
+                (l.name && l.name.toLowerCase().includes(q)) ||
+                (l.member_id && String(l.member_id).toLowerCase().includes(q)) ||
+                (l.mobile && String(l.mobile).includes(q))
+              );
+            }
             setLogs(enriched);
           }
         }
@@ -593,7 +778,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       }
     }
     setIsLoading(!1);
-  }, [timeframeMode, singleDate, rangeStart, rangeEnd, statusFilter, searchQuery, allMembersList]);
+  }, [activePreset, timeframeMode, singleDate, rangeStart, rangeEnd, statusFilter, searchQuery, allMembersList]);
 
   fe.useEffect(() => {
     fetchLogs();
@@ -626,9 +811,9 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         playSynthesizedTone("denied", isMuted);
         setAlertBanner({
           type: "unregistered",
-          title: "ACCESS DENIED (Unregistered Card)",
-          message: `ACCESS DENIED: Card UID / Member ID "${cleanId}" not found in database.`,
-          time: new Date().toLocaleTimeString("en-IN")
+          title: "ACCESS DENIED (Unregistered Member)",
+          message: `ACCESS DENIED: Member ID "${cleanId}" not found in database.`,
+          time: formatISTTime(new Date())
         });
         return { success: !1, error: `Member ID "${cleanId}" not found in database.` };
       }
@@ -647,31 +832,45 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       today0.setHours(0, 0, 0, 0);
       if (expDate) expDate.setHours(0, 0, 0, 0);
 
+      const realMemberId = String(target.member_id || cleanId);
       if (expDate && expDate < today0) {
-        await fetch(`${sbUrl}/rest/v1/attendance`, {
+        const expRes = await fetch(`${sbUrl}/rest/v1/attendance`, {
           method: "POST",
           headers: sbHeaders,
           body: JSON.stringify([{
-            member_id: target.id,
+            member_id: realMemberId,
             status: "expired",
-            check_in_time: new Date().toISOString(),
+            check_in_time: getISTIsoString(new Date()),
             reception_notes: checkInNotes || "Hosted site expired check-in attempt"
           }])
         }).catch(() => {});
+        if (!expRes || !expRes.ok) {
+          await fetch(`${sbUrl}/rest/v1/attendance`, {
+            method: "POST",
+            headers: sbHeaders,
+            body: JSON.stringify([{
+              member_id: target.id,
+              status: "expired",
+              check_in_time: getISTIsoString(new Date()),
+              reception_notes: checkInNotes || "Hosted site expired check-in attempt"
+            }])
+          }).catch(() => {});
+        }
         playSynthesizedTone("denied", isMuted);
         setAlertBanner({
           type: "expired",
           title: "Membership Expired",
           message: "Member plan has expired, please renew plan to continue",
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         fetchLogs();
         return { success: !1, error: "Member plan has expired, please renew plan to continue", status: "expired" };
       }
 
-      // Check duplicate check-in today
-      const todayIso = new Date().toISOString().split("T")[0];
-      const dupRes = await fetch(`${sbUrl}/rest/v1/attendance?member_id=eq.${target.id}&status=eq.valid&check_in_time=gte.${todayIso}T00:00:00Z&check_in_time=lte.${todayIso}T23:59:59Z`, {
+      // Check duplicate check-in today in IST (checking both actual member_id and surrogate id)
+      const todayBound = getISTDayBoundary(0);
+      const dupFilter = `(member_id.eq.${encodeURIComponent(realMemberId)},member_id.eq.${target.id})`;
+      const dupRes = await fetch(`${sbUrl}/rest/v1/attendance?or=${encodeURIComponent(dupFilter)}&status=eq.valid&check_in_time=gte.${encodeURIComponent(todayBound.startIso)}&check_in_time=lte.${encodeURIComponent(todayBound.endIso)}`, {
         headers: sbHeaders
       });
       if (dupRes.ok) {
@@ -679,39 +878,51 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         if (Array.isArray(dups) && dups.length > 0) {
           let timeStr = "earlier today";
           if (dups[0].check_in_time) {
-            try { timeStr = new Date(dups[0].check_in_time).toLocaleTimeString("en-IN"); } catch (_) {}
+            try { timeStr = formatISTTime(dups[0].check_in_time); } catch (_) {}
           }
           playSynthesizedTone("duplicate", isMuted);
           setAlertBanner({
             type: "duplicate",
             title: "Duplicate Attendance Blocked",
             message: `Duplicate Attendance Blocked: ${target.name} already checked in today at ${timeStr}. Multiple check-ins on the same day are not permitted.`,
-            time: new Date().toLocaleTimeString("en-IN")
+            time: formatISTTime(new Date())
           });
           return { success: !1, error: `Duplicate Attendance Blocked: ${target.name} already checked in today at ${timeStr}.` };
         }
       }
 
-      // Save valid check-in
-      const nowIso = new Date().toISOString();
-      await fetch(`${sbUrl}/rest/v1/attendance`, {
+      // Save valid check-in with actual member_id directly
+      const nowIso = getISTIsoString(new Date());
+      const valRes = await fetch(`${sbUrl}/rest/v1/attendance`, {
         method: "POST",
         headers: sbHeaders,
         body: JSON.stringify([{
-          member_id: target.id,
+          member_id: realMemberId,
           status: "valid",
           check_in_time: nowIso,
           reception_notes: checkInNotes || "Hosted site direct check-in"
         }])
-      });
+      }).catch(() => {});
+      if (!valRes || !valRes.ok) {
+        await fetch(`${sbUrl}/rest/v1/attendance`, {
+          method: "POST",
+          headers: sbHeaders,
+          body: JSON.stringify([{
+            member_id: target.id,
+            status: "valid",
+            check_in_time: nowIso,
+            reception_notes: checkInNotes || "Hosted site direct check-in"
+          }])
+        }).catch(() => {});
+      }
 
       playSynthesizedTone("valid", isMuted);
-      const expStr = target.expiry_date ? (window.__fmtDMY ? window.__fmtDMY(target.expiry_date) : target.expiry_date) : "--";
+      const expStr = target.expiry_date ? (formatISTDate(target.expiry_date) || (window.__fmtDMY ? window.__fmtDMY(target.expiry_date) : target.expiry_date)) : "--";
       setAlertBanner({
         type: "valid",
         title: "Check-in Approved (24/7 Access Granted)",
         message: `Welcome ${target.name}! Plan active till ${expStr}.`,
-        time: new Date().toLocaleTimeString("en-IN")
+        time: formatISTTime(new Date())
       });
       fetchLogs();
       return { success: !0, data: { success: !0, member: target, status: "valid" } };
@@ -722,7 +933,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         type: "error",
         title: "Check-in Error",
         message: "Failed to communicate with attendance server or Supabase: " + e.message,
-        time: new Date().toLocaleTimeString("en-IN")
+        time: formatISTTime(new Date())
       });
       return { success: !1, error: e.message };
     }
@@ -731,6 +942,23 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
   const executeCheckIn = async (rawIdentifier, notes = "") => {
     if (!rawIdentifier || !String(rawIdentifier).trim()) return;
     const identifier = String(rawIdentifier).trim();
+
+    // Policy: Strict Present Day Attendance Only
+    if (!isPresentDay) {
+      playSynthesizedTone("denied", isMuted);
+      const blockedMsg = isYesterday
+        ? "Marking attendance for yesterday is disabled while present day attendance is active. Attendance can only be marked for Today."
+        : isFutureDay
+        ? "Marking attendance for future days is disabled. Attendance can only be marked for the present day (Today)."
+        : "Marking attendance is disabled for past dates. Attendance can only be marked for the present day (Today).";
+      setAlertBanner({
+        type: "denied",
+        title: "Attendance Marking Blocked",
+        message: blockedMsg,
+        time: formatISTTime(new Date())
+      });
+      return { success: !1, error: blockedMsg, status: "blocked" };
+    }
 
     // Direct Supabase mode on Netlify or static hosting
     const isNetlifyOrStatic = typeof window !== 'undefined' && (
@@ -815,7 +1043,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           type: "expired",
           title: "Membership Expired",
           message: "Member plan has expired, please renew plan to continue",
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         fetchLogs();
         return { success: !1, error: "Member plan has expired, please renew plan to continue", status: "expired" };
@@ -825,18 +1053,18 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           type: "duplicate",
           title: "Duplicate Attendance Blocked",
           message: data.error || `Duplicate Attendance Blocked: Member already checked in today. Multiple check-ins on the same day are not permitted.`,
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         return { success: !1, error: data.error };
       } else if (res.ok && data.status === "valid" && data.success !== false) {
         playSynthesizedTone("valid", isMuted);
         const memberObj = data.member || localMember;
-        const expStr = memberObj?.expiry_date ? (window.__fmtDMY ? window.__fmtDMY(memberObj.expiry_date) : memberObj.expiry_date) : "--";
+        const expStr = memberObj?.expiry_date ? (formatISTDate(memberObj.expiry_date) || (window.__fmtDMY ? window.__fmtDMY(memberObj.expiry_date) : memberObj.expiry_date)) : "--";
         setAlertBanner({
           type: "valid",
           title: "Check-in Approved (24/7 Access Granted)",
           message: `Welcome ${memberObj?.name || "Member"}! Plan active till ${expStr}.`,
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         fetchLogs();
         return { success: !0, data };
@@ -847,16 +1075,16 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
             type: "expired",
             title: "Membership Expired",
             message: "Member plan has expired, please renew plan to continue",
-            time: new Date().toLocaleTimeString("en-IN")
+            time: formatISTTime(new Date())
           });
           return { success: !1, error: "Member plan has expired, please renew plan to continue" };
         }
         playSynthesizedTone("denied", isMuted);
         setAlertBanner({
           type: "unregistered",
-          title: "ACCESS DENIED (Unregistered Card)",
-          message: data.error || `ACCESS DENIED: Card UID "${identifier}" not found in database.`,
-          time: new Date().toLocaleTimeString("en-IN")
+          title: "ACCESS DENIED (Unregistered Member)",
+          message: data.error || `ACCESS DENIED: Member ID "${identifier}" not found in database.`,
+          time: formatISTTime(new Date())
         });
         return { success: !1, error: data.error };
       } else {
@@ -866,7 +1094,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
             type: "expired",
             title: "Membership Expired",
             message: "Member plan has expired, please renew plan to continue",
-            time: new Date().toLocaleTimeString("en-IN")
+            time: formatISTTime(new Date())
           });
           fetchLogs();
           return { success: !1, error: "Member plan has expired, please renew plan to continue" };
@@ -876,7 +1104,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           type: "error",
           title: "Scanner Notice",
           message: data.error || "Unable to complete check-in. Please verify member status.",
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         return { success: !1, error: data.error };
       }
@@ -887,7 +1115,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           type: "expired",
           title: "Membership Expired",
           message: "Member plan has expired, please renew plan to continue",
-          time: new Date().toLocaleTimeString("en-IN")
+          time: formatISTTime(new Date())
         });
         return { success: !1, error: "Member plan has expired, please renew plan to continue" };
       }
@@ -895,7 +1123,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         type: "error",
         title: "Scanner Notice",
         message: "Failed to communicate with attendance server: " + err.message,
-        time: new Date().toLocaleTimeString("en-IN")
+        time: formatISTTime(new Date())
       });
       return { success: !1, error: err.message };
     }
@@ -958,12 +1186,118 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
     return set.size;
   }, [logs]);
 
+  const handleExecuteDeleteRange = async () => {
+    if (deleteConfirmText.trim() !== "DELETE") {
+      setDeleteModalError('Please type "DELETE" exactly in all caps to confirm deletion.');
+      return;
+    }
+    if (!deleteStartDate) {
+      setDeleteModalError("Please select a valid start date.");
+      return;
+    }
+    const sDate = deleteStartDate;
+    const eDate = deleteEndDate || deleteStartDate;
+    if (sDate > eDate) {
+      setDeleteModalError("Start date cannot be after end date.");
+      return;
+    }
+
+    setIsDeletingLogs(!0);
+    setDeleteModalError(null);
+
+    const sIso = new Date(`${sDate}T00:00:00+05:30`).toISOString();
+    const eIso = new Date(`${eDate}T23:59:59.999+05:30`).toISOString();
+    const sIst = `${sDate}T00:00:00.000`;
+    const eIst = `${eDate}T23:59:59.999`;
+
+    let callSucceeded = false;
+    let localDeleted = 0;
+    let sbDeleted = 0;
+
+    // 1. Call Express API /api/attendance/delete-range
+    try {
+      const res = await fetch("/api/attendance/delete-range", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          start_date: sDate,
+          end_date: eDate,
+          start_iso: sIso,
+          end_iso: eIso,
+          start_ist: sIst,
+          end_ist: eIst,
+          confirmation: "DELETE"
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localDeleted = data.local_deleted || 0;
+        sbDeleted = data.supabase_deleted || 0;
+        callSucceeded = true;
+      }
+    } catch (e) {
+      console.warn("Express delete-range endpoint error, attempting direct Supabase deletion fallback:", e);
+    }
+
+    // 2. Direct Supabase deletion to ensure complete synchronization at database level
+    try {
+      const sbKey = "sb_publishable_ZEh4rJnXI_uEnWYHp7YGHA_st4b9kwU";
+      const sbUrl = "https://kkhnpgztzfpmjltsuhmo.supabase.co";
+      const sbHeaders = {
+        "apikey": sbKey,
+        "Authorization": `Bearer ${sbKey}`,
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+      };
+
+      // Delete by IST wall-clock timestamps (current IST storage format)
+      const resIst = await fetch(`${sbUrl}/rest/v1/attendance?check_in_time=gte.${encodeURIComponent(sIst)}&check_in_time=lte.${encodeURIComponent(eIst)}`, {
+        method: "DELETE",
+        headers: sbHeaders
+      });
+      if (resIst.ok) {
+        const deletedIstRows = await resIst.json().catch(() => []);
+        if (Array.isArray(deletedIstRows)) sbDeleted += deletedIstRows.length;
+        callSucceeded = true;
+      }
+
+      // Also delete by UTC ISO range for any legacy timestamps
+      const resUtc = await fetch(`${sbUrl}/rest/v1/attendance?check_in_time=gte.${encodeURIComponent(sIso)}&check_in_time=lte.${encodeURIComponent(eIso)}`, {
+        method: "DELETE",
+        headers: sbHeaders
+      });
+      if (resUtc.ok) {
+        const deletedUtcRows = await resUtc.json().catch(() => []);
+        if (Array.isArray(deletedUtcRows)) sbDeleted += deletedUtcRows.length;
+        callSucceeded = true;
+      }
+    } catch (sbErr) {
+      console.warn("Direct Supabase delete-range error:", sbErr);
+    }
+
+    setIsDeletingLogs(!1);
+
+    if (callSucceeded) {
+      setShowDeleteModal(!1);
+      setDeleteConfirmText("");
+      setDeleteModalError(null);
+      setAlertBanner({
+        type: "valid",
+        title: "Attendance Logs Deleted",
+        message: `Successfully deleted attendance records from ${formatISTDate(sDate)} to ${formatISTDate(eDate)}. Both local database and Supabase updated (${localDeleted + sbDeleted} entries removed).`,
+        time: formatISTTime(new Date())
+      });
+      fetchLogs();
+    } else {
+      setDeleteModalError("Failed to delete attendance logs. Please check server and database connection.");
+    }
+  };
+
   const handleQuickCSV = (recordsToExport = logs) => {
     const headers = [
       "Check-In Date",
       "Check-In Time",
       "Member ID",
-      "Card UID",
       "Member Name",
       "Membership Plan",
       "Plan Expiry Date",
@@ -971,32 +1305,32 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       "Reception Notes"
     ];
     const rows = recordsToExport.map(r => {
-      let dStr = "";
-      let tStr = "";
-      if (r.check_in_time) {
-        const parts = String(r.check_in_time).replace("T", " ").split(" ");
-        dStr = window.__fmtDMY ? window.__fmtDMY(parts[0]) : parts[0];
-        tStr = parts[1] ? parts[1].split(".")[0] : "";
-      }
+      const dStr = formatISTDate(r.check_in_time);
+      const tStr = formatISTTime(r.check_in_time);
+      const mId = r.member_id || (r.members && r.members.member_id) || "";
+      const mName = r.name || (r.members && r.members.name) || "Unknown Member";
+      const mPlan = r.plan_type || (r.members && r.members.plan_type) || "Regular";
+      const mExp = formatISTDate(r.expiry_date || (r.members && r.members.expiry_date));
+      const mStatus = (r.status || "").toUpperCase();
+      const mNotes = r.reception_notes || "";
       return [
         `"${dStr}"`,
         `"${tStr}"`,
-        `"${r.member_id || ""}"`,
-        `"${r.card_uid || ""}"`,
-        `"${(r.name || "").replace(/"/g, '""')}"`,
-        `"${r.plan_type || ""}"`,
-        `"${window.__fmtDMY ? window.__fmtDMY(r.expiry_date) : (r.expiry_date || "")}"`,
-        `"${(r.status || "").toUpperCase()}"`,
-        `"${(r.reception_notes || "").replace(/"/g, '""')}"`
+        `"${mId}"`,
+        `"${mName.replace(/"/g, '""')}"`,
+        `"${mPlan.replace(/"/g, '""')}"`,
+        `"${mExp}"`,
+        `"${mStatus}"`,
+        `"${mNotes.replace(/"/g, '""')}"`
       ].join(",");
     });
     const csvContent = "\uFEFF" + [headers.join(","), ...rows].join("\r\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const sDate = timeframeMode === "single" ? singleDate : rangeStart;
-    const eDate = timeframeMode === "single" ? singleDate : rangeEnd;
+    const sDate = timeframeMode === "single" ? formatISTDate(new Date(`${singleDate}T00:00:00+05:30`)) : formatISTDate(new Date(`${rangeStart}T00:00:00+05:30`));
+    const eDate = timeframeMode === "single" ? formatISTDate(new Date(`${singleDate}T00:00:00+05:30`)) : formatISTDate(new Date(`${rangeEnd}T00:00:00+05:30`));
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `attendance_report_${sDate}_to_${eDate}.csv`;
+    link.download = `attendance_report_${sDate.replace(/:/g, "-")}_to_${eDate.replace(/:/g, "-")}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1019,7 +1353,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       doc.text("ATTENDANCE AUDIT & CHECK-IN REPORT", margin, 18);
       doc.setTextColor(156, 163, 175);
       doc.setFontSize(7.5);
-      const tfText = timeframeMode === "single" ? `Date: ${singleDate}` : `Timeframe: ${rangeStart} to ${rangeEnd}`;
+      const tfText = timeframeMode === "single" ? `Date: ${formatISTDate(singleDate)}` : `Timeframe: ${formatISTDate(rangeStart)} to ${formatISTDate(rangeEnd)}`;
       doc.text(`${tfText}  |  Generated on: ${new Date().toLocaleString("en-IN")}`, margin, 24);
 
       doc.setFillColor(243, 244, 246);
@@ -1200,6 +1534,15 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
 
   const handleRecordCheckIn = async (e) => {
     if (e && e.preventDefault) e.preventDefault();
+    if (!isPresentDay) {
+      setSearchError(isYesterday 
+        ? "Marking attendance for yesterday is disabled while present day attendance is active. Attendance can only be marked for Today."
+        : isFutureDay
+        ? "Marking attendance for future days is disabled. Attendance can only be marked for the present day (Today)."
+        : "Marking attendance is disabled for historical logs. Attendance can only be marked for the present day (Today)."
+      );
+      return;
+    }
     let target = selectedMember;
     if (!target && manualSearch.trim()) {
       target = handleMemberSearch();
@@ -1210,7 +1553,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
     }
     setManualSubmitting(!0);
     try {
-      const identifier = target.card_uid || target.member_id || target.id;
+      const identifier = String(target.member_id || target.id);
       const notes = manualNotes.trim() || "Manual Check-in at Desk";
       const result = await executeCheckIn(identifier, notes);
       if (result && result.success) {
@@ -1251,7 +1594,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       setTimeout(() => {
         const canvas = document.getElementById("card-barcode-canvas");
         if (canvas) {
-          drawBarcode128(canvas, selectedCardMember.card_uid || `NFT-${selectedCardMember.member_id || selectedCardMember.id}`);
+          drawBarcode128(canvas, String(selectedCardMember.member_id || selectedCardMember.id));
         }
       }, 100);
     }
@@ -1267,9 +1610,9 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         l.jsxs("div",{children:[
           l.jsxs("div",{className:"flex items-center gap-2",children:[
             l.jsx("h2",{className:"text-base font-bold text-white",children:"Front-Desk RFID & Barcode Hardware Scanner"}),
-            l.jsx("span",{className:"px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider rounded-full bg-emerald-500 text-black",children:"24/7 ACTIVE"})
+            isPresentDay ? l.jsx("span",{className:"px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider rounded-full bg-emerald-500 text-black",children:"24/7 ACTIVE"}):l.jsx("span",{className:"px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/40",children:"VIEW-ONLY (CHECK-IN OFF)"})
           ]}),
-          l.jsx("p",{className:"text-xs text-neutral-400 mt-0.5",children:"Global USB keyboard-wedge hook listening. Scan RFID card or Laser barcode anytime without clicking input."})
+          l.jsx("p",{className:"text-xs text-neutral-400 mt-0.5",children:isPresentDay ? "Global USB keyboard-wedge hook listening. Scan RFID card or Laser barcode anytime without clicking input." : "Viewing historical or custom timeframe. Attendance marking is disabled. Switch to 'Today' to record attendance."})
         ]})
       ]}),
       l.jsxs("div",{className:"flex items-center gap-2.5 w-full md:w-auto shrink-0",children:[
@@ -1281,7 +1624,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
             l.jsx("span",{children:isMuted?"🔇 Sound Muted":"🔊 Chimes Active"})
           ]
         }),
-        l.jsxs("button",{
+        isPresentDay ? l.jsxs("button",{
           id:"open-manual-checkin-modal-btn",
           onClick:()=>{
             setSelectedMember(null);
@@ -1300,6 +1643,16 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           children:[
             l.jsx("span",{className:"text-sm leading-none",children:"+"}),
             l.jsx("span",{children:"Manual Check-in"})
+          ]
+        }) : l.jsxs("button",{
+          id:"open-manual-checkin-modal-btn",
+          type:"button",
+          disabled:!0,
+          title:isYesterday ? "Present day attendance is active. Marking attendance for yesterday is disabled." : isFutureDay ? "Marking attendance for future days is disabled. Attendance can only be recorded for the present day." : "Marking attendance is disabled for past logs. Attendance can only be marked for the present day.",
+          className:"px-3.5 py-2 rounded-xl text-xs font-semibold bg-neutral-900 border border-neutral-800 text-neutral-500 cursor-not-allowed flex items-center gap-1.5 opacity-80",
+          children:[
+            l.jsx("span",{children:"🔒"}),
+            l.jsx("span",{children:isYesterday ? "Mark Attendance Disabled (Yesterday)" : isFutureDay ? "Mark Attendance Disabled (Future Date)" : "Mark Attendance Disabled (View-Only)"})
           ]
         })
       ]})
@@ -1390,6 +1743,14 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
             children:[
               l.jsx("span",{children:"Download Report"})
             ]
+          }),
+          l.jsxs("button",{
+            onClick:()=>{ setShowDeleteModal(!0); setDeleteConfirmText(""); setDeleteModalError(null); setDeleteStartDate(timeframeMode==="single"?singleDate:(rangeStart||todayStr)); setDeleteEndDate(timeframeMode==="single"?singleDate:(rangeEnd||todayStr)); },
+            className:"px-3.5 py-1.5 text-xs font-bold rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-1.5 transition-colors cursor-pointer shadow-sm",
+            title:"Delete attendance logs by selecting date range",
+            children:[
+              l.jsx("span",{children:"🗑 Delete Logs"})
+            ]
           })
         ]})
       ]}),
@@ -1397,52 +1758,56 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       timeframeMode==="single"?l.jsxs("div",{className:"flex flex-wrap items-center gap-2 pt-2 border-t border-neutral-800/60",children:[
         l.jsx("span",{className:"text-xs text-neutral-400 font-medium",children:"Preset:"}),
         l.jsx("button",{
-          onClick:()=>setSingleDate(todayStr),
-          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${singleDate===todayStr?"bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
-          children:"Today"
+          onClick:()=>{ setActivePreset("today"); setSingleDate(todayStr); },
+          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${activePreset==="today"?"bg-emerald-500 text-black font-bold border-emerald-400 shadow-md":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
+          children:"Today (Present Day)"
         }),
         l.jsx("button",{
-          onClick:()=>setSingleDate(yesterdayStr),
-          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${singleDate===yesterdayStr?"bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
-          children:"Yesterday"
+          onClick:()=>{ setActivePreset("yesterday"); setSingleDate(yesterdayStr); },
+          title:"View yesterday attendance logs (Mark attendance is disabled)",
+          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${activePreset==="yesterday"?"bg-emerald-500 text-black font-bold border-emerald-400 shadow-md":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
+          children:"Yesterday (Logs Only)"
         }),
         l.jsxs("div",{className:"flex items-center gap-2 ml-auto",children:[
           l.jsx("span",{className:"text-xs text-neutral-400",children:"Select Date:"}),
           l.jsx("input",{
             type:"date",
             value:singleDate,
-            onChange:e=>setSingleDate(e.target.value),
+            max:todayStr,
+            onChange:e=>{
+              const val = e.target.value;
+              if (val > todayStr) {
+                setAlertBanner({
+                  type: "duplicate",
+                  title: "Future Date Blocked",
+                  message: "Marking attendance for future days is disabled. Attendance can only be recorded for the present day (Today).",
+                  time: formatISTTime(new Date())
+                });
+                setSingleDate(todayStr);
+                setActivePreset("today");
+                return;
+              }
+              setSingleDate(val);
+              setActivePreset("custom");
+            },
             className:"px-3 py-1.5 text-xs rounded-lg bg-neutral-950 border border-neutral-800 text-white focus:border-emerald-500 focus:outline-none"
           })
         ]})
       ]}):l.jsxs("div",{className:"flex flex-wrap items-center gap-2 pt-2 border-t border-neutral-800/60",children:[
         l.jsx("span",{className:"text-xs text-neutral-400 font-medium",children:"Range Presets:"}),
         l.jsx("button",{
-          onClick:()=>{
-            const d = new Date(); d.setDate(d.getDate() - 7);
-            setRangeStart(d.toISOString().split("T")[0]);
-            setRangeEnd(todayStr);
-          },
-          className:"px-2.5 py-1 text-xs rounded-lg border bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white cursor-pointer",
+          onClick:()=>{ setActivePreset("last7"); setRangeStart(last7Boundary.dateStr); setRangeEnd(todayStr); },
+          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${activePreset==="last7"?"bg-emerald-500 text-black font-bold border-emerald-400 shadow-md":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
           children:"Last 7 Days"
         }),
         l.jsx("button",{
-          onClick:()=>{
-            const d = new Date(); d.setDate(d.getDate() - 30);
-            setRangeStart(d.toISOString().split("T")[0]);
-            setRangeEnd(todayStr);
-          },
-          className:"px-2.5 py-1 text-xs rounded-lg border bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white cursor-pointer",
+          onClick:()=>{ setActivePreset("last30"); setRangeStart(getISTDayBoundary(-29).dateStr); setRangeEnd(todayStr); },
+          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${activePreset==="last30"?"bg-emerald-500 text-black font-bold border-emerald-400 shadow-md":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
           children:"Last 30 Days"
         }),
         l.jsx("button",{
-          onClick:()=>{
-            const d = new Date();
-            const first = new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0];
-            setRangeStart(first);
-            setRangeEnd(todayStr);
-          },
-          className:"px-2.5 py-1 text-xs rounded-lg border bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white cursor-pointer",
+          onClick:()=>{ setActivePreset("thisMonth"); setRangeStart(thisMonthStartStr); setRangeEnd(todayStr); },
+          className:`px-2.5 py-1 text-xs rounded-lg border cursor-pointer ${activePreset==="thisMonth"?"bg-emerald-500 text-black font-bold border-emerald-400 shadow-md":"bg-neutral-950 border-neutral-800 text-neutral-400 hover:text-white"}`,
           children:"This Month"
         }),
         l.jsxs("div",{className:"flex items-center gap-2 ml-auto",children:[
@@ -1450,19 +1815,33 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
           l.jsx("input",{
             type:"date",
             value:rangeStart,
-            onChange:e=>setRangeStart(e.target.value),
+            onChange:e=>{ setRangeStart(e.target.value); setActivePreset("custom"); },
             className:"px-2.5 py-1 text-xs rounded-lg bg-neutral-950 border border-neutral-800 text-white focus:border-emerald-500 focus:outline-none"
           }),
           l.jsx("span",{className:"text-xs text-neutral-400",children:"To:"}),
           l.jsx("input",{
             type:"date",
             value:rangeEnd,
-            onChange:e=>setRangeEnd(e.target.value),
+            onChange:e=>{ setRangeEnd(e.target.value); setActivePreset("custom"); },
             className:"px-2.5 py-1 text-xs rounded-lg bg-neutral-950 border border-neutral-800 text-white focus:border-emerald-500 focus:outline-none"
           })
         ]})
       ]}),
 
+      isYesterday&&l.jsxs("div",{className:"px-3.5 py-2 rounded-xl bg-amber-950/40 border border-amber-600/40 text-amber-300 text-xs flex items-center justify-between gap-2 animate-in fade-in duration-150",children:[
+        l.jsxs("div",{className:"flex items-center gap-2",children:[
+          l.jsx("span",{className:"text-sm",children:"ℹ️"}),
+          l.jsx("span",{children:"Viewing Yesterday's Attendance Logs (Audit / View-Only Mode). Marking attendance for yesterday is disabled while present day attendance is active."})
+        ]}),
+        l.jsx("button",{type:"button",onClick:()=>{ setActivePreset("today"); setSingleDate(todayStr); },className:"px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-bold cursor-pointer shrink-0",children:"Switch to Present Day"})
+      ]}),
+      isFutureDay&&l.jsxs("div",{className:"px-3.5 py-2 rounded-xl bg-red-950/40 border border-red-600/40 text-red-300 text-xs flex items-center justify-between gap-2 animate-in fade-in duration-150",children:[
+        l.jsxs("div",{className:"flex items-center gap-2",children:[
+          l.jsx("span",{className:"text-sm",children:"⛔"}),
+          l.jsx("span",{children:"Future Date Selected. Marking attendance for future days is disabled. Attendance can only be recorded for the present day."})
+        ]}),
+        l.jsx("button",{type:"button",onClick:()=>{ setActivePreset("today"); setSingleDate(todayStr); },className:"px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-[11px] font-bold cursor-pointer shrink-0",children:"Switch to Present Day"})
+      ]}),
       l.jsxs("div",{className:"grid grid-cols-1 md:grid-cols-3 gap-3 pt-2 border-t border-neutral-800/60",children:[
         l.jsx("div",{className:"md:col-span-2",children:
           l.jsx("input",{
@@ -1494,13 +1873,12 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         l.jsxs("table",{className:"w-full text-left border-collapse",children:[
           l.jsx("thead",{className:"bg-neutral-950/80 border-b border-neutral-800 text-[11px] font-bold uppercase tracking-wider text-neutral-400",children:
             l.jsxs("tr",{children:[
-              l.jsx("th",{className:"py-3.5 px-4",children:timeframeMode==="single"?"Check-in Time":"Date & Time"}),
-              l.jsx("th",{className:"py-3.5 px-4",children:"Member"}),
-              l.jsx("th",{className:"py-3.5 px-4",children:"Card UID"}),
+              l.jsx("th",{className:"py-3.5 px-4",children:"Date & Time (IST)"}),
+              l.jsx("th",{className:"py-3.5 px-4",children:"Member ID"}),
+              l.jsx("th",{className:"py-3.5 px-4",children:"Member Name"}),
               l.jsx("th",{className:"py-3.5 px-4",children:"Plan & Validity"}),
               l.jsx("th",{className:"py-3.5 px-4",children:"Status"}),
-              l.jsx("th",{className:"py-3.5 px-4",children:"Desk Notes"}),
-              
+              l.jsx("th",{className:"py-3.5 px-4",children:"Desk Notes"})
             ]})
           }),
           l.jsx("tbody",{className:"divide-y divide-neutral-800/60 text-xs text-neutral-300",children:
@@ -1509,38 +1887,29 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
                 isLoading?"Loading attendance logs...":"No attendance records found for this timeframe."
               })
             }):logs.map(log=>{
-              let timeStr = "--";
-              let dateStr = "--";
-              if (log.check_in_time) {
-                const parts = String(log.check_in_time).replace("T", " ").split(" ");
-                dateStr = window.__fmtDMY ? window.__fmtDMY(parts[0]) : parts[0];
-                timeStr = parts[1] ? parts[1].split(".")[0] : "--";
-              }
-              const expDateStr = window.__fmtDMY ? window.__fmtDMY(log.expiry_date) : (log.expiry_date || "--");
+              const timeStr = formatISTTime(log.check_in_time) || "--";
+              const dateStr = formatISTDate(log.check_in_time) || "--";
+              const expDateStr = formatISTDate(log.expiry_date) || "--";
+              const memId = log.member_id || "--";
+              const memName = log.name || "Unknown Member";
 
               return l.jsxs("tr",{key:log.id,className:"hover:bg-neutral-800/40 transition-colors",children:[
                 l.jsxs("td",{className:"py-3 px-4 font-mono",children:[
-                  timeframeMode==="single"?l.jsx("span",{className:"font-bold text-white",children:timeStr}):
-                  l.jsxs("div",{children:[
-                    l.jsx("div",{className:"text-neutral-400 text-[11px]",children:dateStr}),
-                    l.jsx("div",{className:"font-bold text-white",children:timeStr})
-                  ]})
+                  l.jsx("div",{className:"text-neutral-400 text-[11px]",children:dateStr}),
+                  l.jsx("div",{className:"font-bold text-white",children:timeStr})
                 ]}),
+                l.jsx("td",{className:"py-3 px-4 font-mono font-bold text-emerald-400 text-xs",children:memId}),
                 l.jsxs("td",{className:"py-3 px-4",children:[
                   l.jsxs("div",{className:"flex items-center gap-2.5",children:[
                     l.jsx("div",{className:"w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center shrink-0 border border-emerald-500/30 text-xs",children:
-                      (log.name||"M")[0].toUpperCase()
+                      (memName||"M")[0].toUpperCase()
                     }),
-                    l.jsxs("div",{children:[
-                      l.jsx("div",{className:"font-semibold text-white",children:log.name||"Unknown Member"}),
-                      l.jsxs("div",{className:"text-[10px] text-neutral-400 font-mono",children:["ID: ",log.member_id||"--"]})
-                    ]})
+                    l.jsx("div",{className:"font-semibold text-white",children:memName})
                   ]})
                 ]}),
-                l.jsx("td",{className:"py-3 px-4 font-mono text-[11px] text-neutral-400",children:log.card_uid||`RFID-${log.member_id||""}`}),
                 l.jsxs("td",{className:"py-3 px-4",children:[
                   l.jsx("div",{className:"font-medium text-white",children:log.plan_type||"Regular"}),
-                  l.jsxs("div",{className:"text-[10px] text-neutral-400",children:["Exp: ",expDateStr]})
+                  l.jsxs("div",{className:"text-[10px] text-neutral-400 font-mono",children:["Exp: ",expDateStr]})
                 ]}),
                 l.jsx("td",{className:"py-3 px-4",children:
                   log.status==="valid"?l.jsx("span",{className:"px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-400 border border-emerald-500/40",children:"VALID"}):
@@ -1572,6 +1941,13 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
 
         // Scrollable Body
         l.jsxs("div",{className:"space-y-4 overflow-y-auto pr-1 flex-1",children:[
+          l.jsxs("div",{className:"p-2.5 rounded-xl bg-neutral-900 border border-neutral-800 flex items-center justify-between text-xs",children:[
+            l.jsxs("div",{className:"flex items-center gap-2",children:[
+              l.jsx("span",{className:"text-neutral-400 font-medium",children:"Attendance Date:"}),
+              l.jsxs("span",{className:"font-bold font-mono text-emerald-400",children:["Present Day (Today - ",window.__fmtDMY?window.__fmtDMY(todayStr):todayStr,")"]})
+            ]}),
+            l.jsx("span",{className:"px-2 py-0.5 text-[10px] font-extrabold uppercase rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",children:"Present Day Only"})
+          ]}),
           // 1 - Member Search Bar & Search Button (same action exactly as member search button available and perform on ERP home page)
           l.jsxs("div",{ref:searchContainerRef,className:"space-y-1.5 relative",children:[
             l.jsx("label",{className:"block text-xs font-semibold text-neutral-300",children:"1. Member Search Bar"}),
@@ -1694,7 +2070,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
               l.jsx("span",{className:"text-base",children:"⚠"}),
               l.jsxs("span",{children:[
                 "Already checked in today at ",
-                selectedMemberCheckedInToday.check_in_time?selectedMemberCheckedInToday.check_in_time.split(" ")[1]:"earlier",
+                selectedMemberCheckedInToday.check_in_time?formatISTTime(selectedMemberCheckedInToday.check_in_time):"earlier",
                 "."
               ]})
             ]}),
@@ -1886,5 +2262,125 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         ]})
       ]})
     ]})
-  ]});
+,
+
+    showDeleteModal&&l.jsxs("div",{
+      className:"fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200",
+      children:[
+        l.jsxs("div",{
+          className:"w-full max-w-md bg-neutral-900 border border-red-500/40 rounded-2xl p-6 shadow-2xl space-y-4 text-white",
+          children:[
+            l.jsxs("div",{
+              className:"flex items-center justify-between pb-3 border-b border-neutral-800",
+              children:[
+                l.jsxs("div",{
+                  className:"flex items-center gap-2",
+                  children:[
+                    l.jsx("span",{className:"text-red-500 text-xl",children:"⚠️"}),
+                    l.jsx("h3",{className:"text-lg font-bold text-red-400",children:"Delete Attendance Logs"})
+                  ]
+                }),
+                l.jsx("button",{
+                  onClick:()=>{ setShowDeleteModal(!1); setDeleteConfirmText(""); setDeleteModalError(null); },
+                  className:"text-neutral-400 hover:text-white text-xl cursor-pointer",
+                  children:"×"
+                })
+              ]
+            }),
+
+            l.jsxs("div",{
+              className:"p-3.5 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-200 space-y-1.5",
+              children:[
+                l.jsx("strong",{className:"text-red-400 block font-semibold",children:"Permanent Deletion Warning"}),
+                l.jsx("p",{children:"This action will permanently delete all attendance logs in the selected date range from BOTH the local database and connected Supabase database. This operation CANNOT be undone."})
+              ]
+            }),
+
+            l.jsxs("div",{
+              className:"space-y-3",
+              children:[
+                l.jsxs("div",{
+                  className:"grid grid-cols-2 gap-3",
+                  children:[
+                    l.jsxs("div",{
+                      children:[
+                        l.jsx("label",{className:"block text-[11px] font-semibold text-neutral-400 mb-1",children:"Start Date (IST)"}),
+                        l.jsx("input",{
+                          type:"date",
+                          value:deleteStartDate,
+                          onChange:(e)=>setDeleteStartDate(e.target.value),
+                          className:"w-full px-3 py-1.5 text-xs rounded-lg bg-neutral-950 border border-neutral-700 text-white focus:outline-none focus:border-red-500"
+                        })
+                      ]
+                    }),
+                    l.jsxs("div",{
+                      children:[
+                        l.jsx("label",{className:"block text-[11px] font-semibold text-neutral-400 mb-1",children:"End Date (IST)"}),
+                        l.jsx("input",{
+                          type:"date",
+                          value:deleteEndDate,
+                          onChange:(e)=>setDeleteEndDate(e.target.value),
+                          className:"w-full px-3 py-1.5 text-xs rounded-lg bg-neutral-950 border border-neutral-700 text-white focus:outline-none focus:border-red-500"
+                        })
+                      ]
+                    })
+                  ]
+                }),
+
+                l.jsxs("div",{
+                  className:"p-2.5 rounded-lg bg-neutral-950 border border-neutral-800 text-[11px] text-neutral-300 flex justify-between",
+                  children:[
+                    l.jsx("span",{children:"Date Range (IST):"}),
+                    l.jsx("strong",{className:"font-mono text-white",children:`${formatISTDate(deleteStartDate)} to ${formatISTDate(deleteEndDate)}`})
+                  ]
+                }),
+
+                l.jsxs("div",{
+                  children:[
+                    l.jsxs("label",{
+                      className:"block text-xs font-bold text-neutral-200 mb-1.5",
+                      children:[
+                        "To confirm deletion, type ",
+                        l.jsx("span",{className:"text-red-400 font-mono underline font-extrabold",children:"DELETE"}),
+                        " in capital letters:"
+                      ]
+                    }),
+                    l.jsx("input",{
+                      type:"text",
+                      value:deleteConfirmText,
+                      onChange:(e)=>setDeleteConfirmText(e.target.value),
+                      placeholder:"Type DELETE to confirm",
+                      className:"w-full px-3 py-2 text-xs font-mono tracking-wider rounded-xl bg-neutral-950 border border-neutral-700 text-white placeholder-neutral-600 focus:outline-none focus:border-red-500 uppercase"
+                    })
+                  ]
+                }),
+
+                deleteModalError&&l.jsx("div",{
+                  className:"p-2.5 rounded-lg bg-red-950/60 border border-red-500/50 text-red-300 text-xs font-semibold",
+                  children:deleteModalError
+                })
+              ]
+            }),
+
+            l.jsxs("div",{
+              className:"flex items-center justify-end gap-3 pt-3 border-t border-neutral-800",
+              children:[
+                l.jsx("button",{
+                  onClick:()=>{ setShowDeleteModal(!1); setDeleteConfirmText(""); setDeleteModalError(null); },
+                  disabled:isDeletingLogs,
+                  className:"px-4 py-2 text-xs font-semibold rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 transition-colors cursor-pointer",
+                  children:"Cancel"
+                }),
+                l.jsx("button",{
+                  onClick:handleExecuteDeleteRange,
+                  disabled:deleteConfirmText.trim()!=="DELETE"||isDeletingLogs,
+                  className:"px-4 py-2 text-xs font-bold rounded-xl bg-red-600 hover:bg-red-500 text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors cursor-pointer flex items-center gap-1.5 shadow-lg shadow-red-950/50",
+                  children:isDeletingLogs?"Deleting...":"Confirm & Delete Logs"
+                })
+              ]
+            })
+          ]
+        })
+      ]
+    })  ]});
 };

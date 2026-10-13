@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node server.cjs",
     "start": "node server.cjs",
-    "build": "mkdir -p dist/assets && cp -r assets/* dist/assets/ 2>/dev/null || true && cp index.html crm.html style.css balsyahi-logo.* img_1_1788170607635.jpg _redirects dist/ 2>/dev/null || true"
+    "build": "mkdir -p dist/assets dist/icons && cp -r assets/* dist/assets/ 2>/dev/null || true && cp -r icons/* dist/icons/ 2>/dev/null || true && cp index.html crm.html style.css manifest.json sw.js pwa-register.js balsyahi-logo.* img_1_1788170607635.jpg _redirects dist/ 2>/dev/null || true"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.48.1",

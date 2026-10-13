@@ -1,0 +1,74 @@
+{
+  "id": "/",
+  "name": "NFT Gym Management ERP",
+  "short_name": "NFT Gym",
+  "description": "Professional Fitness Center & Member Management ERP System",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "window-controls-overlay",
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "theme_color": "#0a0a0a",
+  "background_color": "#000000",
+  "categories": [
+    "business",
+    "productivity",
+    "fitness"
+  ],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/balsyahi-logo.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Attendance Station",
+      "short_name": "Attendance",
+      "url": "/?tab=attendance",
+      "description": "Quick access to Member Attendance Scanner",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "CRM Dashboard",
+      "short_name": "CRM",
+      "url": "/crm",
+      "description": "Members, Payments and Analytics Portal",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
+}
