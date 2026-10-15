@@ -334,7 +334,7 @@ async function getAllMembers(searchQuery = "", statusFilter = "all") {
     sql += " WHERE (name LIKE ? OR mobile LIKE ? OR member_id LIKE ?)";
     params.push(`%${searchQuery.trim()}%`, `%${searchQuery.trim()}%`, `%${searchQuery.trim()}%`);
   }
-  sql += " ORDER BY expiry_date ASC, id DESC";
+  sql += " ORDER BY CAST(member_id AS INTEGER) ASC, id ASC";
   const stmt = database.prepare(sql);
   if (params.length > 0) {
     stmt.bind(params);
@@ -1094,6 +1094,10 @@ async function startServer() {
       }
       if (!start_date) {
         return res.status(400).json({ error: "Date of Plan Active is required." });
+      }
+      const numPaid = paid_amount !== undefined && paid_amount !== null ? Number(paid_amount) : 0;
+      if (numPaid <= 0) {
+        return res.status(400).json({ error: "Paid Amount is required and must be greater than 0. No registration can be done if nothing is paid." });
       }
       let formattedMobile = cleanMobile;
       const rawDigits = formattedMobile.replace(/[^0-9]/g, "");
