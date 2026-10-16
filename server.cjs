@@ -331,8 +331,14 @@ async function getAllMembers(searchQuery = "", statusFilter = "all") {
   let sql = "SELECT id, member_id, name, gender, date_of_birth, address, mobile, plan_type, start_date, expiry_date, profile_picture, documents, medical_history, amount, registration_fee, is_renewal, discount, tax, final_amount, paid_amount, remaining_amount, payment_mode, payment_history, card_uid, created_at FROM members";
   const params = [];
   if (searchQuery.trim()) {
-    sql += " WHERE (name LIKE ? OR mobile LIKE ? OR member_id LIKE ?)";
-    params.push(`%${searchQuery.trim()}%`, `%${searchQuery.trim()}%`, `%${searchQuery.trim()}%`);
+    const q = searchQuery.trim();
+    if (/^\d+$/.test(q)) {
+      sql += " WHERE (member_id = ? OR member_id LIKE ?)";
+      params.push(q, `${q}%`);
+    } else {
+      sql += " WHERE (name LIKE ? OR name LIKE ?)";
+      params.push(`${q}%`, `% ${q}%`);
+    }
   }
   sql += " ORDER BY CAST(member_id AS INTEGER) ASC, id ASC";
   const stmt = database.prepare(sql);
@@ -1454,9 +1460,8 @@ async function startServer() {
         }
       }
 
-      // Policy 2 — Strict Duplicate Attendance Block (1 Valid Check-in per Day in IST)
-
-      const dupStmt = db.prepare("SELECT * FROM attendance WHERE member_id = ? AND status = 'valid' AND ((check_in_time >= ? AND check_in_time <= ?) OR date(check_in_time) = date(?))");
+      // Policy 2 — Strict Duplicate Attendance Block (1 Check-in per Day in IST for ALL members including expired)
+      const dupStmt = db.prepare("SELECT * FROM attendance WHERE member_id = ? AND ((check_in_time >= ? AND check_in_time <= ?) OR date(check_in_time) = date(?)) ORDER BY id DESC LIMIT 1");
       dupStmt.bind([member.id, startTodayISTIso, endTodayISTIso, todayISTStr]);
       let existingValid = null;
       if (dupStmt.step()) {
@@ -1474,8 +1479,9 @@ async function startServer() {
             timeStr = raw.includes(" ") ? raw.split(" ")[1] : raw;
           }
         }
+        const isPrevExp = existingValid.status === 'expired';
         return res.status(409).json({ 
-          error: `Duplicate Attendance Blocked: ${member.name} already checked in today at ${timeStr}. Multiple check-ins on the same day are not permitted.`,
+          error: `Duplicate Attendance Blocked: ${member.name} has already recorded attendance today at ${timeStr}${isPrevExp ? ' (Expired Plan)' : ''}. Multiple check-ins within 24 hours are strictly prohibited.`,
           status: "duplicate",
           member,
           existing: existingValid

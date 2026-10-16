@@ -2207,15 +2207,30 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
 
   const [selectedCardMember, setSelectedCardMember] = fe.useState(null);
 
-  // Manual Check-in Form state matching ERP home page pB
+    // Manual Check-in Form state with debounce, AbortController, and confirmation
   const [manualSearch, setManualSearch] = fe.useState("");
+  const [debouncedManualQuery, setDebouncedManualQuery] = fe.useState("");
+  const [isSearchLoading, setIsSearchLoading] = fe.useState(!1);
   const [showSuggestions, setShowSuggestions] = fe.useState(!1);
   const [selectedMember, setSelectedMember] = fe.useState(null);
+  const [pendingConfirmMember, setPendingConfirmMember] = fe.useState(null);
+  const [checkinSuccessMessage, setCheckinSuccessMessage] = fe.useState(null);
   const [searchError, setSearchError] = fe.useState(null);
   const [manualNotes, setManualNotes] = fe.useState("");
   const [manualSubmitting, setManualSubmitting] = fe.useState(!1);
   const searchInputRef = fe.useRef(null);
   const searchContainerRef = fe.useRef(null);
+  const searchAbortControllerRef = fe.useRef(null);
+  const searchRequestIdRef = fe.useRef(0);
+  const isSelectionActionRef = fe.useRef(false);
+
+  // Debounce search input by 280ms before computing suggestions or querying
+  fe.useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedManualQuery(manualSearch.trim());
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [manualSearch]);
 
   // Click outside to dismiss hints dropdown
   fe.useEffect(() => {
@@ -2451,6 +2466,30 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       if (expDate) expDate.setHours(0, 0, 0, 0);
 
       const realMemberId = String(target.member_id || cleanId);
+      // Policy: Strict Duplicate Attendance Block (1 Check-in per Day in IST for ALL members including expired)
+      const todayBound = getISTDayBoundary(0);
+      const dupFilter = `(member_id.eq.${encodeURIComponent(realMemberId)},member_id.eq.${target.id})`;
+      const dupRes = await fetch(`${sbUrl}/rest/v1/attendance?or=${encodeURIComponent(dupFilter)}&check_in_time=gte.${encodeURIComponent(todayBound.startIso)}&check_in_time=lte.${encodeURIComponent(todayBound.endIso)}&order=check_in_time.desc&limit=1`, {
+        headers: sbHeaders
+      });
+      if (dupRes.ok) {
+        const dups = await dupRes.json();
+        if (Array.isArray(dups) && dups.length > 0) {
+          let timeStr = "earlier today";
+          if (dups[0].check_in_time) {
+            try { timeStr = formatISTTime(dups[0].check_in_time); } catch (_) {}
+          }
+          const isPrevExp = dups[0].status === "expired";
+          playSynthesizedTone("duplicate", isMuted);
+          setAlertBanner({
+            type: "duplicate",
+            title: "Duplicate Attendance Blocked",
+            message: `Duplicate Attendance Blocked: ${target.name} has already recorded attendance today at ${timeStr}${isPrevExp ? " (Expired Plan)" : ""}. Multiple check-ins within 24 hours are strictly prohibited.`,
+            time: formatISTTime(new Date())
+          });
+          return { success: !1, error: `Duplicate Attendance Blocked: ${target.name} already recorded attendance today at ${timeStr}.`, status: "duplicate", existing: dups[0] };
+        }
+      }
       if (expDate && expDate < today0) {
         const expRes = await fetch(`${sbUrl}/rest/v1/attendance`, {
           method: "POST",
@@ -2483,30 +2522,6 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         });
         fetchLogs();
         return { success: !1, error: "Member plan has expired, please renew plan to continue", status: "expired" };
-      }
-
-      // Check duplicate check-in today in IST (checking both actual member_id and surrogate id)
-      const todayBound = getISTDayBoundary(0);
-      const dupFilter = `(member_id.eq.${encodeURIComponent(realMemberId)},member_id.eq.${target.id})`;
-      const dupRes = await fetch(`${sbUrl}/rest/v1/attendance?or=${encodeURIComponent(dupFilter)}&status=eq.valid&check_in_time=gte.${encodeURIComponent(todayBound.startIso)}&check_in_time=lte.${encodeURIComponent(todayBound.endIso)}`, {
-        headers: sbHeaders
-      });
-      if (dupRes.ok) {
-        const dups = await dupRes.json();
-        if (Array.isArray(dups) && dups.length > 0) {
-          let timeStr = "earlier today";
-          if (dups[0].check_in_time) {
-            try { timeStr = formatISTTime(dups[0].check_in_time); } catch (_) {}
-          }
-          playSynthesizedTone("duplicate", isMuted);
-          setAlertBanner({
-            type: "duplicate",
-            title: "Duplicate Attendance Blocked",
-            message: `Duplicate Attendance Blocked: ${target.name} already checked in today at ${timeStr}. Multiple check-ins on the same day are not permitted.`,
-            time: formatISTTime(new Date())
-          });
-          return { success: !1, error: `Duplicate Attendance Blocked: ${target.name} already checked in today at ${timeStr}.` };
-        }
       }
 
       // Save valid check-in with actual member_id directly
@@ -2648,13 +2663,22 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         return await executeDirectSupabaseCheckIn(identifier, notes, localMember);
       }
 
+            if (res.status === 409 || data.status === "duplicate") {
+        playSynthesizedTone("duplicate", isMuted);
+        setAlertBanner({
+          type: "duplicate",
+          title: "Duplicate Attendance Blocked",
+          message: data.error || `Duplicate Attendance Blocked: Member already recorded attendance today. Multiple check-ins within 24 hours are strictly prohibited.`,
+          time: formatISTTime(new Date())
+        });
+        return { success: !1, error: data.error, status: "duplicate" };
+      }
       const isExpired = 
         res.status === 403 || 
         data.status === "expired" || 
         (data.error && data.error.toLowerCase().includes("expired")) ||
         (responseText && responseText.toLowerCase().includes("expired")) ||
-        (isLocallyExpired && (!res.ok || data.status === "expired" || data.success === false));
-
+        (isLocallyExpired && (data.status === "expired" || (!res.ok && res.status !== 409)));
       if (isExpired) {
         playSynthesizedTone("denied", isMuted);
         setAlertBanner({
@@ -2665,15 +2689,6 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         });
         fetchLogs();
         return { success: !1, error: "Member plan has expired, please renew plan to continue", status: "expired" };
-      } else if (res.status === 409 || data.status === "duplicate") {
-        playSynthesizedTone("duplicate", isMuted);
-        setAlertBanner({
-          type: "duplicate",
-          title: "Duplicate Attendance Blocked",
-          message: data.error || `Duplicate Attendance Blocked: Member already checked in today. Multiple check-ins on the same day are not permitted.`,
-          time: formatISTTime(new Date())
-        });
-        return { success: !1, error: data.error };
       } else if (res.ok && data.status === "valid" && data.success !== false) {
         playSynthesizedTone("valid", isMuted);
         const memberObj = data.member || localMember;
@@ -3059,99 +3074,223 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
     }
   };
 
-  // ERP Home page (pB) search logic & live hints (supports Name, Member ID, and Mobile)
-  const isSearchLetter = fe.useMemo(() => {
-    return !!manualSearch.trim();
-  }, [manualSearch]);
+    // Refactored 4-Tier Search Algorithm matching exact specification
+  const computeRankedMembers = (rawQuery, list) => {
+    let q = String(rawQuery || "").trim();
+    if (!q) return [];
+    if (q.includes(" - ")) {
+      const parts = q.split(" - ");
+      const pId = parts[0].trim();
+      if (/^\d+$/.test(pId)) {
+        const exact = list.filter(m => String(m.member_id || m.id).trim() === pId);
+        if (exact.length > 0) return exact;
+      }
+      q = parts.slice(1).join(" - ").trim();
+    }
+    const isDigitOnly = /^\d+$/.test(q);
 
-  const searchSuggestions = fe.useMemo(() => {
-    const raw = manualSearch.trim();
-    if (!raw) return [];
-    const q = raw.toLowerCase().replace(/\s+/g, " ");
-    const cleanDigits = raw.replace(/[^0-9]/g, "");
-    const list = (allMembersList && allMembersList.length > 0) ? allMembersList : members;
-    return list.filter(m => {
-      const name = (m.name || "").replace(/\s+/g, " ").toLowerCase();
-      if (name.includes(q)) return true;
-      const memId = String(m.member_id || "").toLowerCase().trim();
-      if (memId.includes(q)) return true;
-      if (cleanDigits && String(m.id) === cleanDigits) return true;
-      if (cleanDigits && cleanDigits.length >= 3 && m.mobile && String(m.mobile).replace(/[^0-9]/g, "").includes(cleanDigits)) return true;
-      return false;
-    }).slice(0, 8);
-  }, [manualSearch, allMembersList, members]);
+    if (isDigitOnly) {
+      // Tier 1: Exact Member ID match
+      // Tier 2: Member ID prefix match
+      // Strict: No fuzzy matching, similarity, Levenshtein, mobile, or loose substring
+      const exactMatches = [];
+      const prefixMatches = [];
+
+      for (const m of list) {
+        const mid = String(m.member_id || m.id).trim();
+        if (mid === q) {
+          exactMatches.push(m);
+        } else if (mid.startsWith(q)) {
+          prefixMatches.push(m);
+        }
+      }
+
+      prefixMatches.sort((a, b) => {
+        const numA = parseInt(String(a.member_id || a.id).replace(/\D/g, ""), 10) || 0;
+        const numB = parseInt(String(b.member_id || b.id).replace(/\D/g, ""), 10) || 0;
+        return numA - numB;
+      });
+
+      return [...exactMatches, ...prefixMatches].slice(0, 10);
+    } else {
+      // Tier 3: Member Name prefix match
+      // Tier 4: Member Name word match
+      const qLower = q.toLowerCase();
+      const prefixNameMatches = [];
+      const wordNameMatches = [];
+
+      const norm = (s) => s.toLowerCase().replace(/dh/g, "d").replace(/[^a-z0-9]/g, "");
+      const qNorm = norm(q);
+
+      for (const m of list) {
+        const name = String(m.name || "").trim();
+        const nameLower = name.toLowerCase();
+        const words = nameLower.split(/\s+/).filter(Boolean);
+
+        if (nameLower.startsWith(qLower) || (qNorm.length >= 3 && norm(name).startsWith(qNorm))) {
+          prefixNameMatches.push(m);
+        } else if (words.some(w => w.startsWith(qLower) || (qNorm.length >= 3 && norm(w).startsWith(qNorm)))) {
+          wordNameMatches.push(m);
+        }
+      }
+
+      prefixNameMatches.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+      wordNameMatches.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+
+      return [...prefixNameMatches, ...wordNameMatches].slice(0, 10);
+    }
+  };
+
+  // Asynchronous search with AbortController, request cancellation, and stale response rejection
+  const [searchSuggestions, setSearchSuggestions] = fe.useState([]);
+
+  fe.useEffect(() => {
+    if (isSelectionActionRef.current) {
+      isSelectionActionRef.current = false;
+      return;
+    }
+    const raw = debouncedManualQuery.trim();
+    if (!raw) {
+      setSearchSuggestions([]);
+      setIsSearchLoading(!1);
+      return;
+    }
+
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+    const abortCtrl = new AbortController();
+    searchAbortControllerRef.current = abortCtrl;
+    const currentReqId = ++searchRequestIdRef.current;
+
+    setIsSearchLoading(!0);
+    setSearchError(null);
+
+    const runSearch = async () => {
+      try {
+        let list = (allMembersList && allMembersList.length > 0) ? allMembersList : members;
+        if (!list || list.length === 0) {
+          const r = await fetch("/api/members", { signal: abortCtrl.signal });
+          if (r.ok) {
+            const data = await r.json();
+            list = Array.isArray(data) ? data : (data.members || []);
+            setAllMembersList(list);
+          }
+        }
+        if (currentReqId !== searchRequestIdRef.current) return;
+
+        const results = computeRankedMembers(raw, list || []);
+        if (currentReqId === searchRequestIdRef.current) {
+          setSearchSuggestions(results);
+          setIsSearchLoading(!1);
+          setShowSuggestions(!0);
+          if (results.length === 0) {
+            setSearchError("No member found.");
+          }
+        }
+      } catch (err) {
+        if (err.name === "AbortError") return;
+        if (currentReqId === searchRequestIdRef.current) {
+          setIsSearchLoading(!1);
+        }
+      }
+    };
+
+    runSearch();
+
+    return () => {
+      abortCtrl.abort();
+    };
+  }, [debouncedManualQuery, allMembersList, members]);
 
   const handleMemberSearch = (e) => {
     if (e && e.preventDefault) e.preventDefault();
     setShowSuggestions(!1);
     setSearchError(null);
+    setCheckinSuccessMessage(null);
     const q = manualSearch.trim();
     if (!q) {
       setSearchError("Please enter a Member Name or Member ID to search.");
       return null;
     }
-    const qNorm = q.replace(/\s+/g, " ").toLowerCase();
-    const cleanDigits = q.replace(/[^0-9]/g, "");
+
     const list = (allMembersList && allMembersList.length > 0) ? allMembersList : members;
+    const results = computeRankedMembers(q, list);
 
-    // 1. Exact match on member_id (e.g. 608, 27)
-    let matched = list.find(m => {
-      if (!m.member_id) return !1;
-      const memIdLower = String(m.member_id).toLowerCase().trim();
-      if (memIdLower === qNorm) return !0;
-      const memDigits = memIdLower.replace(/[^0-9]/g, "");
-      return !!(cleanDigits && memDigits === cleanDigits);
-    });
-
-    // 2. Exact match on database id
-    if (!matched && cleanDigits) {
-      matched = list.find(m => m.id === Number(cleanDigits));
-    }
-    // 3. Exact normalized name match (handles spaces like 'Prince  soni')
-    if (!matched) {
-      matched = list.find(m => (m.name || "").replace(/\s+/g, " ").toLowerCase().trim() === qNorm);
-    }
-    // 4. Partial normalized name match
-    if (!matched) {
-      matched = list.find(m => (m.name || "").replace(/\s+/g, " ").toLowerCase().includes(qNorm));
-    }
-    // 5. Mobile match
-    if (!matched && cleanDigits.length >= 4) {
-      matched = list.find(m => m.mobile && String(m.mobile).replace(/[^0-9]/g, "").includes(cleanDigits));
-    }
-    // 6. Card UID match
-    if (!matched) {
-      matched = list.find(m => m.card_uid && String(m.card_uid).toLowerCase().trim() === qNorm);
-    }
-
-    if (matched) {
+    if (results && results.length > 0) {
+      const matched = results[0];
       setSelectedMember(matched);
+      setManualSearch(`${matched.member_id || matched.id} - ${matched.name}`);
       setSearchError(null);
+      // Close underlying search modal and open ONLY the single confirmation popup
+      setShowManualModal(!1);
+      setPendingConfirmMember(matched);
       return matched;
     } else {
       setSelectedMember(null);
-      setSearchError(`No member found matching "${q}". Please check the Member ID or Member Name.`);
+      setSearchError("No member found.");
       return null;
     }
   };
 
-  const selectSuggestion = (m) => {
-    setSelectedMember(m);
-    setManualSearch(m.name || "");
+  // Suggestion selection: reads member ID strictly from data-member-id and bound object
+  const handleSuggestionSelect = (e, memberObj) => {
+    if (e) {
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+    }
+    isSelectionActionRef.current = true;
+    const targetEl = e ? e.currentTarget : null;
+    const memberIdFromAttr = targetEl ? targetEl.getAttribute("data-member-id") : null;
+    const dbIdFromAttr = targetEl ? targetEl.getAttribute("data-db-id") : null;
+
+    const resolvedId = memberIdFromAttr || String(memberObj.member_id || memberObj.id);
+    if (!resolvedId) {
+      setSearchError("Member selection error. Please search again.");
+      return;
+    }
+
+    const list = (allMembersList && allMembersList.length > 0) ? allMembersList : members;
+    const target = list.find(m => 
+      String(m.member_id || m.id).trim() === String(resolvedId).trim() && 
+      (dbIdFromAttr ? m.id === Number(dbIdFromAttr) : m.id === memberObj.id)
+    ) || memberObj;
+
+    setSelectedMember(target);
+    setManualSearch(`${target.member_id || target.id} - ${target.name}`);
+    setDebouncedManualQuery("");
     setShowSuggestions(!1);
+    if (searchInputRef.current) { try { searchInputRef.current.blur(); } catch(_) {} }
+    setSearchSuggestions([]);
     setSearchError(null);
+    setCheckinSuccessMessage(null);
+
+    // Close underlying search modal and open ONLY the single confirmation popup
+    setShowManualModal(!1);
+    setPendingConfirmMember(target);
   };
 
   const clearManualSearch = () => {
+    isSelectionActionRef.current = false;
     setManualSearch("");
+    setDebouncedManualQuery("");
     setShowSuggestions(!1);
+    setSearchSuggestions([]);
     setSelectedMember(null);
+    setPendingConfirmMember(null);
     setSearchError(null);
+    setCheckinSuccessMessage(null);
     if (searchInputRef.current) searchInputRef.current.focus();
   };
 
-  const handleRecordCheckIn = async (e) => {
-    if (e && e.preventDefault) e.preventDefault();
+  // Confirmed check-in execution
+  const handleExecuteConfirmedCheckIn = async (targetMember) => {
+    if (!targetMember) {
+      setSearchError("Member selection error. Please search again.");
+      setPendingConfirmMember(null);
+      return;
+    }
+
     if (!isPresentDay) {
       setSearchError(isYesterday 
         ? "Marking attendance for yesterday is disabled while present day attendance is active. Attendance can only be marked for Today."
@@ -3159,8 +3298,62 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
         ? "Marking attendance for future days is disabled. Attendance can only be marked for the present day (Today)."
         : "Marking attendance is disabled for historical logs. Attendance can only be marked for the present day (Today)."
       );
+      setPendingConfirmMember(null);
       return;
     }
+
+    const identifier = String(targetMember.member_id || targetMember.id).trim();
+    if (!identifier) {
+      setSearchError("Member selection error. Please search again.");
+      setPendingConfirmMember(null);
+      return;
+    }
+
+    setManualSubmitting(!0);
+    setSearchError(null);
+    setCheckinSuccessMessage(null);
+
+    try {
+      const notes = manualNotes.trim() || "Manual Check-in at Desk";
+      const result = await executeCheckIn(identifier, notes);
+
+      if (result && result.success) {
+        const successMsg = `Check-in Successful: Member ${targetMember.member_id || targetMember.id} - ${targetMember.name} checked in successfully.`;
+        setAlertBanner({
+          type: "valid",
+          title: "Check-in Approved",
+          message: successMsg,
+          time: formatISTTime(new Date())
+        });
+        setPendingConfirmMember(null);
+        setSelectedMember(null);
+        setShowManualModal(!1);
+        setManualSearch("");
+        setDebouncedManualQuery("");
+        setManualNotes("");
+        setSearchError(null);
+        fetchLogs();
+      } else {
+        const errMsg = (result && result.error) || "Check-in could not be completed.";
+        setAlertBanner({
+          type: "denied",
+          title: "Check-in Blocked",
+          message: errMsg,
+          time: formatISTTime(new Date())
+        });
+        setPendingConfirmMember(null);
+      }
+    } catch (err) {
+      console.error("Check-in error:", err);
+      setSearchError(err.message || "Failed to communicate with attendance server.");
+      setPendingConfirmMember(null);
+    } finally {
+      setManualSubmitting(!1);
+    }
+  };
+
+  const handleRecordCheckIn = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
     let target = selectedMember;
     if (!target && manualSearch.trim()) {
       target = handleMemberSearch();
@@ -3169,31 +3362,10 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       setSearchError("Please search and select a member to record check-in.");
       return;
     }
-    setManualSubmitting(!0);
-    try {
-      const identifier = String(target.member_id || target.id);
-      const notes = manualNotes.trim() || "Manual Check-in at Desk";
-      const result = await executeCheckIn(identifier, notes);
-      if (result && result.success) {
-        setShowManualModal(!1);
-        setSelectedMember(null);
-        setManualSearch("");
-        setManualNotes("");
-        setSearchError(null);
-      } else {
-        // Show exact rejection / validation reason right inside the modal
-        const errMsg = (result && result.error) || "Check-in could not be completed.";
-        setSearchError(errMsg);
-      }
-    } catch(err) {
-      console.error("Check-in error:", err);
-      setSearchError(err.message || "Failed to communicate with attendance server");
-    } finally {
-      setManualSubmitting(!1);
-    }
+    // Directly execute check-in for the selected member
+    await handleExecuteConfirmedCheckIn(target);
   };
-
-  const selectedMemberCheckedInToday = fe.useMemo(() => {
+const selectedMemberCheckedInToday = fe.useMemo(() => {
     if (!selectedMember) return null;
     return logs.find(l => String(l.member_id) === String(selectedMember.member_id || selectedMember.id) && l.status === "valid");
   }, [selectedMember, logs]);
@@ -3575,15 +3747,15 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
               children:[
                 l.jsxs("div",{className:"relative flex-1",children:[
                   l.jsx("div",{className:"absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-neutral-400",children:l.jsx(Ic,{className:"w-4 h-4"})}),
-                  l.jsx("input",{
+                                    l.jsx("input",{
                     ref:searchInputRef,
                     id:"manual-member-search-input",
                     type:"text",
                     autoComplete:"off",
-                    placeholder:"Search by Member Name (with live hints) or Member ID (e.g. Rahul or 329)...",
+                    placeholder:"Search by Member ID (e.g. 26) or Member Name (e.g. Dharmendra)...",
                     value:manualSearch,
-                    onChange:e=>{ setManualSearch(e.target.value); setShowSuggestions(!0); if(searchError) setSearchError(null); },
-                    onFocus:()=>{ if(manualSearch.trim() && isSearchLetter) setShowSuggestions(!0); },
+                    onChange:e=>{ const v=e.target.value; setManualSearch(v); setSelectedMember(null); setShowSuggestions(!!v.trim()); if(searchError) setSearchError(null); if(checkinSuccessMessage) setCheckinSuccessMessage(null); },
+                    onFocus:()=>{ if(manualSearch.trim()&&!selectedMember) setShowSuggestions(!0); },
                     className:"w-full pl-10 pr-9 py-2.5 text-xs rounded-xl bg-neutral-950 border border-neutral-700 text-white placeholder-neutral-500 focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-none transition-colors"
                   }),
                   manualSearch&&l.jsx("button",{
@@ -3593,39 +3765,46 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
                     title:"Clear search",
                     children:"×"
                   }),
-                  // Live dropdown suggestions matching ERP home page pB
-                  showSuggestions&&isSearchLetter&&searchSuggestions.length>0&&l.jsxs("div",{
+                  // Live dropdown suggestions with onMouseDown, data-member-id, and empty state
+                  showSuggestions&&!selectedMember&&manualSearch.trim()&&l.jsxs("div",{
                     id:"manual-member-search-hints-dropdown",
                     className:"absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl bg-neutral-900 border-2 border-emerald-500/60 shadow-2xl overflow-hidden backdrop-blur-lg divide-y divide-neutral-800 animate-in fade-in zoom-in-95 duration-150",
                     children:[
                       l.jsxs("div",{className:"px-3.5 py-1.5 bg-neutral-950/90 text-[11px] font-bold text-emerald-400 uppercase tracking-wider flex items-center justify-between",children:[
-                        l.jsxs("span",{children:["Matching Member Names (",searchSuggestions.length," suggestions)"]}),
-                        l.jsx("span",{className:"text-neutral-500 font-normal text-[10px]",children:"Click to select"})
+                        l.jsxs("span",{children:[/^\d+$/.test(manualSearch.trim())?"Matching Member IDs":"Matching Member Names",isSearchLoading?" (Searching...)":` (${searchSuggestions.length} found)`]}),
+                        l.jsx("span",{className:"text-neutral-500 font-normal text-[10px]",children:"Click to select & confirm"})
                       ]}),
-                      l.jsx("div",{className:"max-h-52 overflow-y-auto",children:searchSuggestions.map(s=>{
-                        const sId = s.member_id || `ID: ${s.id}`;
-                        const isExp = s.expiry_date ? (new Date(s.expiry_date) < new Date(new Date().setHours(0,0,0,0))) : !1;
-                        return l.jsxs("button",{
-                          key:s.id,
-                          type:"button",
-                          onClick:()=>selectSuggestion(s),
-                          className:"w-full px-3 py-2 text-left hover:bg-neutral-800/90 transition-colors flex items-center justify-between gap-2.5 cursor-pointer",
-                          children:[
-                            l.jsxs("div",{className:"flex items-center gap-2.5 min-w-0",children:[
-                              l.jsx("div",{className:"w-7 h-7 rounded-lg bg-neutral-800 text-emerald-400 font-bold text-xs flex items-center justify-center shrink-0 border border-neutral-700",children:(s.name||"M")[0].toUpperCase()}),
-                              l.jsxs("div",{className:"min-w-0",children:[
-                                l.jsxs("div",{className:"flex items-center gap-2",children:[
-                                  l.jsx("span",{className:"text-xs font-bold text-white truncate",children:s.name}),
-                                  l.jsx("span",{className:"px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-neutral-800 text-neutral-300 border border-neutral-700",children:sId})
-                                ]}),
-                                l.jsxs("div",{className:"text-[10px] text-neutral-400 mt-0.5",children:[s.mobile||"No mobile"," • ",s.plan_type||"Plan"]})
-                              ]})
-                            ]}),
-                            isExp?l.jsx("span",{className:"px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-500/20 text-red-400 border border-red-500/30 shrink-0",children:"Expired"}):
-                            l.jsx("span",{className:"px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0",children:"Active"})
-                          ]
-                        });
-                      })})
+                      searchSuggestions.length===0?(
+                        l.jsx("div",{className:"px-3.5 py-3 text-xs text-neutral-400 italic text-center",children:isSearchLoading?"Searching matching members...":"No member found."})
+                      ):(
+                        l.jsx("div",{className:"max-h-52 overflow-y-auto",children:searchSuggestions.map(s=>{
+                          const sId = String(s.member_id || s.id);
+                          const isExp = s.expiry_date ? (new Date(s.expiry_date) < new Date(new Date().setHours(0,0,0,0))) : !1;
+                          return l.jsxs("button",{
+                            key:s.id,
+                            type:"button",
+                            "data-member-id":sId,
+                            "data-db-id":s.id,
+                            "data-member-name":s.name||"",
+                            onMouseDown:e=>handleSuggestionSelect(e, s),onClick:e=>handleSuggestionSelect(e, s),
+                            className:"w-full px-3 py-2 text-left hover:bg-neutral-800/90 transition-colors flex items-center justify-between gap-2.5 cursor-pointer",
+                            children:[
+                              l.jsxs("div",{className:"flex items-center gap-2.5 min-w-0",children:[
+                                l.jsx("div",{className:"w-7 h-7 rounded-lg bg-neutral-800 text-emerald-400 font-bold text-xs flex items-center justify-center shrink-0 border border-neutral-700",children:(s.name||"M")[0].toUpperCase()}),
+                                l.jsxs("div",{className:"min-w-0",children:[
+                                  l.jsxs("div",{className:"flex items-center gap-2",children:[
+                                    l.jsx("span",{className:"text-xs font-bold text-white truncate",children:s.name}),
+                                    l.jsx("span",{className:"px-1.5 py-0.2 rounded text-[10px] font-mono font-bold bg-neutral-800 text-neutral-300 border border-neutral-700",children:sId})
+                                  ]}),
+                                  l.jsxs("div",{className:"text-[10px] text-neutral-400 mt-0.5",children:[s.mobile||"No mobile"," • ",s.plan_type||"Plan"]})
+                                ]})
+                              ]}),
+                              isExp?l.jsx("span",{className:"px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-500/20 text-red-400 border border-red-500/30 shrink-0",children:"Expired"}):
+                              l.jsx("span",{className:"px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 shrink-0",children:"Active"})
+                            ]
+                          });
+                        })})
+                      )
                     ]
                   })
                 ]}),
@@ -3641,7 +3820,7 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
                 })
               ]
             }),
-            searchError&&l.jsxs("div",{className:"p-2.5 rounded-xl bg-red-950/80 border border-red-500/40 text-red-300 text-xs flex items-center gap-2 mt-2",children:[
+            checkinSuccessMessage&&l.jsxs("div",{id:"checkin-success-banner",className:"p-3 rounded-xl bg-emerald-950/90 border border-emerald-500/60 text-emerald-200 text-xs font-semibold flex items-center justify-between gap-2 mt-2 shadow-lg animate-in fade-in duration-200",children:[l.jsxs("div",{className:"flex items-center gap-2",children:[l.jsx("span",{className:"text-emerald-400 font-bold text-sm",children:"✓"}),l.jsx("span",{children:checkinSuccessMessage})]}),l.jsx("button",{type:"button",onClick:()=>setCheckinSuccessMessage(null),className:"text-emerald-400 hover:text-white text-xs cursor-pointer",children:"✕"})]}),searchError&&l.jsxs("div",{className:"p-2.5 rounded-xl bg-red-950/80 border border-red-500/40 text-red-300 text-xs flex items-center gap-2 mt-2",children:[
               l.jsx("span",{className:"text-sm",children:"⚠"}),
               l.jsx("span",{children:searchError})
             ]})
@@ -3744,7 +3923,40 @@ const AttendanceManager = ({ members = [], onRefreshMembers, onNavigateTab }) =>
       ]})
     ]}),
 
-    showReportModal&&l.jsxs("div",{className:"fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200",children:[
+    pendingConfirmMember&&(()=>{
+    const isExp = pendingConfirmMember.expiry_date ? (new Date(pendingConfirmMember.expiry_date) < new Date(new Date().setHours(0,0,0,0))) : !1;
+    const expDateStr = window.__fmtDMY ? window.__fmtDMY(pendingConfirmMember.expiry_date) : (pendingConfirmMember.expiry_date || "--");
+    return l.jsx("div",{className:"fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/85 backdrop-blur-sm animate-in fade-in duration-150",children:l.jsxs("div",{className:"w-full max-w-sm bg-neutral-900 border-2 border-emerald-500/70 rounded-2xl p-5 shadow-2xl text-white space-y-4",children:[
+      l.jsxs("div",{className:"flex items-center justify-between pb-3 border-b border-neutral-800",children:[
+        l.jsxs("div",{className:"flex items-center gap-2.5",children:[
+          l.jsx("div",{className:"w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-sm border border-emerald-500/30",children:"✓"}),
+          l.jsxs("div",{children:[
+            l.jsx("h4",{className:"text-sm font-bold text-white",children:"Confirm Attendance Check-in"}),
+            l.jsx("p",{className:"text-[10px] text-neutral-400",children:"Front-Desk Manual Check-in"})
+          ]})
+        ]}),
+        l.jsx("button",{type:"button",onClick:()=>{ setPendingConfirmMember(null); setSelectedMember(null); },className:"text-neutral-400 hover:text-white p-1 rounded-lg text-sm",children:"✕"})
+      ]}),
+      l.jsxs("div",{className:"p-3.5 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2 text-center",children:[
+        l.jsx("div",{className:"text-[11px] text-neutral-400 uppercase font-semibold tracking-wider",children:"Check-in Member"}),
+        l.jsxs("div",{id:"confirm-member-checkin-display",className:"text-base font-black text-emerald-400 font-mono tracking-wide",children:[pendingConfirmMember.member_id||pendingConfirmMember.id," - ",pendingConfirmMember.name]}),
+        l.jsxs("div",{className:"text-[11px] text-neutral-400 flex items-center justify-center gap-2 pt-0.5",children:[
+          l.jsx("span",{children:pendingConfirmMember.plan_type||"Plan"}),
+          l.jsx("span",{children:"•"}),
+          isExp ? l.jsxs("span",{className:"text-red-400 font-bold",children:["Expired (",expDateStr,")"]}):l.jsxs("span",{className:"text-emerald-400 font-bold",children:["Active till ",expDateStr]})
+        ]}),
+        l.jsx("div",{className:"text-xs font-semibold text-neutral-200 pt-1.5 border-t border-neutral-900",children:"Are you sure?"})
+      ]}),
+      l.jsxs("div",{className:"space-y-1",children:[
+        l.jsx("label",{htmlFor:"confirm-desk-note",className:"block text-[11px] font-semibold text-neutral-300",children:"Desk Note (Optional):"}),
+        l.jsx("input",{id:"confirm-desk-note",type:"text",placeholder:"e.g. Verified at reception desk",value:manualNotes,onChange:e=>setManualNotes(e.target.value),className:"w-full px-3 py-2 text-xs rounded-xl bg-neutral-950 border border-neutral-700 text-white placeholder-neutral-500 focus:border-emerald-500 focus:outline-none"})
+      ]}),
+      l.jsxs("div",{className:"flex items-center gap-2 pt-1",children:[
+        l.jsx("button",{type:"button",onClick:()=>{ setPendingConfirmMember(null); setSelectedMember(null); },className:"flex-1 py-2.5 px-3 rounded-xl bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-semibold cursor-pointer transition-colors",children:"Cancel"}),
+        l.jsx("button",{type:"button",disabled:manualSubmitting,onClick:()=>handleExecuteConfirmedCheckIn(pendingConfirmMember),className:"flex-1 py-2.5 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold uppercase tracking-wider cursor-pointer shadow-md shadow-emerald-500/20 transition-all",children:manualSubmitting?"Recording...":"Confirm Check-in"})
+      ]})
+    ]})})
+  })(),showReportModal&&l.jsxs("div",{className:"fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200",children:[
       l.jsxs("div",{className:"w-full max-w-md bg-neutral-900 border border-neutral-800 rounded-2xl p-6 shadow-2xl space-y-5 text-white",children:[
         l.jsxs("div",{className:"flex items-center justify-between pb-3 border-b border-neutral-800",children:[
           l.jsxs("div",{children:[
