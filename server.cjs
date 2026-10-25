@@ -672,7 +672,7 @@ async function deleteMember(id) {
 
   return { success: true, id };
 }
-async function renewMember(id, planType, newStartDate, discount = 0, amount = null) {
+async function renewMember(id, planType, newStartDate, discount = 0, amount = null, options = {}) {
   const database = await getDb();
   const current = await getMemberById(id);
   if (!current) throw new Error("Member not found");
@@ -685,10 +685,61 @@ async function renewMember(id, planType, newStartDate, discount = 0, amount = nu
   const expiryDate = calculateExpiry(startDate, planType);
   const baseAmount = amount !== null && amount !== undefined ? Number(amount) : (Number(current.amount) || 0);
   const disc = Number(discount) || 0;
-  const finalAmount = Math.max(0, baseAmount - disc);
+  const tax = options.tax !== undefined ? Number(options.tax) : 0;
+  const finalAmount = Math.max(0, baseAmount - disc + tax);
+  const paidAmount = options.paid_amount !== undefined && options.paid_amount !== null && options.paid_amount !== "" 
+    ? Math.max(0, Number(options.paid_amount)) 
+    : finalAmount;
+  const remainingAmount = options.remaining_amount !== undefined && options.remaining_amount !== null 
+    ? Math.max(0, Number(options.remaining_amount)) 
+    : Math.max(0, finalAmount - paidAmount);
+  const paymentMode = options.payment_mode || current.payment_mode || "Via Online";
+
+  let renewalHistory = [];
+  if (current.renewal_history) {
+    try {
+      renewalHistory = JSON.parse(current.renewal_history);
+      if (!Array.isArray(renewalHistory)) renewalHistory = [];
+    } catch (_) { renewalHistory = []; }
+  }
+  renewalHistory.unshift({
+    id: `ren_${Date.now()}`,
+    renewal_date: todayStr,
+    previous_plan: current.plan_type,
+    previous_expiry: current.expiry_date,
+    plan_type: planType,
+    start_date: startDate,
+    expiry_date: expiryDate,
+    amount: baseAmount,
+    discount: disc,
+    tax,
+    final_amount: finalAmount,
+    paid_amount: paidAmount,
+    remaining_amount: remainingAmount,
+    payment_mode: paymentMode,
+    notes: options.notes || `Renewed to ${planType} plan${disc > 0 ? ` (Discount: ₹${disc})` : ""}${remainingAmount > 0 ? ` (Due: ₹${remainingAmount})` : ""}`
+  });
+
+  let paymentHistory = [];
+  if (current.payment_history) {
+    try {
+      paymentHistory = JSON.parse(current.payment_history);
+      if (!Array.isArray(paymentHistory)) paymentHistory = [];
+    } catch (_) { paymentHistory = []; }
+  }
+  if (paidAmount > 0) {
+    paymentHistory.push({
+      id: `pay_ren_${Date.now()}`,
+      date: todayStr,
+      amount: paidAmount,
+      payment_mode: paymentMode,
+      notes: `Renewal for ${planType}${disc > 0 ? ` (₹${baseAmount} - ₹${disc} discount)` : ""}${remainingAmount > 0 ? ` [Part payment, Due: ₹${remainingAmount}]` : " [Fully Paid]"}`
+    });
+  }
+
   database.run(
-    "UPDATE members SET plan_type = ?, start_date = ?, expiry_date = ?, is_renewal = 1, registration_fee = 0, amount = ?, discount = ?, final_amount = ?, paid_amount = ?, remaining_amount = 0 WHERE id = ?",
-    [planType, startDate, expiryDate, baseAmount, disc, finalAmount, finalAmount, id]
+    "UPDATE members SET plan_type = ?, start_date = ?, expiry_date = ?, is_renewal = 1, registration_fee = 0, amount = ?, discount = ?, tax = ?, final_amount = ?, paid_amount = ?, remaining_amount = ?, payment_mode = ?, renewal_history = ?, payment_history = ? WHERE id = ?",
+    [planType, startDate, expiryDate, baseAmount, disc, tax, finalAmount, paidAmount, remainingAmount, paymentMode, JSON.stringify(renewalHistory), JSON.stringify(paymentHistory), id]
   );
   saveDatabase();
 
@@ -703,17 +754,21 @@ async function renewMember(id, planType, newStartDate, discount = 0, amount = nu
         expiry_date: expiryDate,
         amount: baseAmount,
         discount: disc,
+        tax,
         final_amount: finalAmount,
-        paid_amount: finalAmount,
-        remaining_amount: 0,
+        paid_amount: paidAmount,
+        remaining_amount: remainingAmount,
+        payment_mode: paymentMode,
         is_renewal: true,
-        registration_fee: 0
+        registration_fee: 0,
+        renewal_history: JSON.stringify(renewalHistory),
+        payment_history: JSON.stringify(paymentHistory)
       }).or(`member_id.eq.${targetCode},id.eq.${id}`).catch(() => {});
     }
   } catch (_) {}
 
   const { status, days_remaining } = computeMemberStatus(expiryDate);
-  return { success: true, id, plan_type: planType, start_date: startDate, expiry_date: expiryDate, amount: baseAmount, discount: disc, final_amount: finalAmount, status, days_remaining };
+  return { success: true, id, plan_type: planType, start_date: startDate, expiry_date: expiryDate, amount: baseAmount, discount: disc, tax, final_amount: finalAmount, paid_amount: paidAmount, remaining_amount: remainingAmount, status, days_remaining };
 }
 async function getDashboardStats() {
   const database = await getDb();
@@ -1196,7 +1251,7 @@ async function startServer() {
   app.put("/api/members/:id/renew", requireAuth, async (req, res) => {
     try {
       const id = parseInt(req.params.id, 10);
-      const { plan_type, start_date, discount, amount } = req.body || {};
+      const { plan_type, start_date, discount, amount, paid_amount, remaining_amount, tax, payment_mode, notes } = req.body || {};
       if (isNaN(id) || id <= 0 || !plan_type) {
         return res.status(400).json({ error: "Invalid ID or plan_type" });
       }
@@ -1205,7 +1260,8 @@ async function startServer() {
         stripHtml(plan_type),
         start_date ? stripHtml(start_date) : void 0,
         discount !== undefined ? Number(discount) : 0,
-        amount !== undefined && amount !== null ? Number(amount) : null
+        amount !== undefined && amount !== null ? Number(amount) : null,
+        { paid_amount, remaining_amount, tax, payment_mode, notes }
       );
       res.json({ success: true, member: updated });
     } catch (err) {
