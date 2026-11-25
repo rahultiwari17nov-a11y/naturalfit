@@ -393,7 +393,14 @@ function getSupabaseServerClient() {
   if (!supabaseUrl || !supabaseKey) {
     throw new Error("Supabase URL and Key are required.");
   }
-  cachedSupabaseClient = (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey);
+  const clientOpts = {
+    auth: { persistSession: false, autoRefreshToken: false }
+  };
+  if (typeof globalThis.WebSocket === "undefined") {
+    class NoopWebSocket {}
+    clientOpts.realtime = { transport: NoopWebSocket };
+  }
+  cachedSupabaseClient = (0, import_supabase_js.createClient)(supabaseUrl, supabaseKey, clientOpts);
   return cachedSupabaseClient;
 }
 
