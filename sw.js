@@ -8,7 +8,7 @@
  *  - Lifecycle: self.skipWaiting() on install, clients.claim() on activate
  */
 
-const CACHE_VERSION = 'nft-erp-v1.0.4';
+const CACHE_VERSION = 'nft-erp-v1.0.7';
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 
@@ -78,10 +78,14 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // B. Bypass API routes, Database endpoints, and Supabase calls (NEVER cache transactional data)
+  // B. Never intercept cross-origin requests (e.g. Supabase, CDNs, fonts) — let browser handle directly
+  if (url.origin !== self.location.origin) {
+    return;
+  }
+
+  // B2. Bypass same-origin API routes and Auth endpoints (Network-Only)
   if (
     url.pathname.startsWith('/api/') ||
-    url.hostname.includes('supabase.co') ||
     url.pathname.includes('/auth/') ||
     url.pathname.includes('/sync')
   ) {

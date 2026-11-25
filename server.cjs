@@ -28,8 +28,25 @@ var import_jsonwebtoken = __toESM(require("jsonwebtoken"), 1);
 var import_crypto = __toESM(require("crypto"), 1);
 
 // Security & Auth Utilities
-var RUNTIME_SECRET = import_crypto.default.randomBytes(32).toString("hex");
-var JWT_SECRET = process.env.JWT_SECRET || RUNTIME_SECRET;
+var IS_SERVERLESS = Boolean(process.env.NETLIFY || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
+function loadOrCreateJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  const secretPath = IS_SERVERLESS
+    ? import_path.default.join("/tmp", ".jwt_secret")
+    : import_path.default.join(__dirname, ".jwt_secret");
+  try {
+    if (import_fs.default.existsSync(secretPath)) {
+      const saved = import_fs.default.readFileSync(secretPath, "utf8").trim();
+      if (saved.length >= 32) return saved;
+    }
+    const generated = import_crypto.default.randomBytes(32).toString("hex");
+    import_fs.default.writeFileSync(secretPath, generated, { mode: 0o600 });
+    return generated;
+  } catch {
+    return import_crypto.default.randomBytes(32).toString("hex");
+  }
+}
+var JWT_SECRET = loadOrCreateJwtSecret();
 var revokedTokens = new Set();
 var memorySessions = new Map();
 
@@ -99,6 +116,142 @@ function sanitizeMediaUrl(url) {
 
 var ipRateLimits = new Map();
 var ADMIN_SECURITY_PIN = process.env.ADMIN_SECURITY_PIN || "gulshan@123";
+var SECURITY_PIN_SYSTEM_USERNAME = "__admin_security_pin__";
+var PIN_CONFIG_FILE = IS_SERVERLESS
+  ? import_path.default.join("/tmp", ".admin_security_config.json")
+  : import_path.default.join(__dirname, ".admin_security_config.json");
+var cachedPinConfig = { fetchedAt: 0, row: null };
+
+function readLocalSecurityConfig() {
+  try {
+    if (import_fs.default.existsSync(PIN_CONFIG_FILE)) {
+      const parsed = JSON.parse(import_fs.default.readFileSync(PIN_CONFIG_FILE, "utf8"));
+      if (parsed && typeof parsed === "object") {
+        return {
+          pinHash: parsed.pinHash || null,
+          passwordOverrides: parsed.passwordOverrides && typeof parsed.passwordOverrides === "object" ? parsed.passwordOverrides : {},
+          customStaff: Array.isArray(parsed.customStaff) ? parsed.customStaff : [],
+          deletedStaffIds: Array.isArray(parsed.deletedStaffIds) ? parsed.deletedStaffIds : []
+        };
+      }
+    }
+  } catch {}
+  return { pinHash: null, passwordOverrides: {}, customStaff: [], deletedStaffIds: [] };
+}
+
+function writeLocalSecurityConfig(cfg) {
+  try {
+    import_fs.default.writeFileSync(PIN_CONFIG_FILE, JSON.stringify({ ...cfg, updatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readLocalPinConfig() {
+  const cfg = readLocalSecurityConfig();
+  return cfg.pinHash ? cfg : null;
+}
+
+function writeLocalPinConfig(pinHash) {
+  const cfg = readLocalSecurityConfig();
+  cfg.pinHash = pinHash;
+  return writeLocalSecurityConfig(cfg);
+}
+
+async function getStoredPinRow(forceRefresh = false) {
+  const localCfg = readLocalPinConfig();
+  if (localCfg && localCfg.pinHash) {
+    return { id: 0, username: SECURITY_PIN_SYSTEM_USERNAME, password: localCfg.pinHash, role: "system_config", source: "local" };
+  }
+  const now = Date.now();
+  if (!forceRefresh && cachedPinConfig.fetchedAt > 0 && now - cachedPinConfig.fetchedAt < 15000) {
+    return cachedPinConfig.row;
+  }
+  try {
+    const sb = getSupabaseServerClient();
+    const { data, error } = await sb
+      .from("staff_users")
+      .select("id, username, password, role")
+      .eq("username", SECURITY_PIN_SYSTEM_USERNAME)
+      .maybeSingle();
+    if (!error) {
+      cachedPinConfig = { fetchedAt: now, row: data || null };
+      return cachedPinConfig.row;
+    }
+  } catch {}
+  return cachedPinConfig.row;
+}
+
+async function verifyStoredSecurityPin(candidatePin) {
+  const clean = String(candidatePin || "").trim();
+  if (!clean) return false;
+  const row = await getStoredPinRow(false);
+  if (row && row.password) {
+    return await comparePassword(clean, String(row.password));
+  }
+  return clean === ADMIN_SECURITY_PIN;
+}
+
+async function updateStoredSecurityPin(newPin) {
+  const clean = String(newPin || "").trim();
+  if (clean.length < 4) {
+    const err = new Error("New Security Code must be at least 4 characters long.");
+    err.statusCode = 400;
+    throw err;
+  }
+  const hashed = hashPasswordSync(clean);
+  let dbOk = false;
+  let dbErrMsg = "";
+  try {
+    const sb = getSupabaseServerClient();
+    const { data: existing } = await sb
+      .from("staff_users")
+      .select("id")
+      .eq("username", SECURITY_PIN_SYSTEM_USERNAME)
+      .maybeSingle();
+    if (existing && existing.id) {
+      const { data: upRows, error } = await sb
+        .from("staff_users")
+        .update({ password: hashed, role: "system_config" })
+        .eq("id", existing.id)
+        .select("id");
+      if (!error && Array.isArray(upRows) && upRows.length > 0) dbOk = true;
+      else if (error) dbErrMsg = error.message;
+    } else {
+      const { data: insRows, error } = await sb
+        .from("staff_users")
+        .insert([{ username: SECURITY_PIN_SYSTEM_USERNAME, password: hashed, role: "system_config" }])
+        .select("id");
+      if (!error && Array.isArray(insRows) && insRows.length > 0) dbOk = true;
+      else if (error) dbErrMsg = error.message;
+    }
+  } catch (e) {
+    dbErrMsg = e.message || "";
+  }
+  if (IS_SERVERLESS && !dbOk) {
+    const err = new Error(
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+        ? `Unable to save Security Code to Supabase (${dbErrMsg || "RLS blocked"}).`
+        : "SUPABASE_SERVICE_ROLE_KEY is required in Netlify Environment Variables to save Security Code permanently in Supabase."
+    );
+    err.statusCode = 500;
+    throw err;
+  }
+  const localOk = dbOk ? true : writeLocalPinConfig(hashed);
+  if (dbOk) {
+    const cfg = readLocalSecurityConfig();
+    if (cfg.pinHash) {
+      cfg.pinHash = null;
+      writeLocalSecurityConfig(cfg);
+    }
+  }
+  if (!localOk && !dbOk) {
+    throw new Error("Unable to persist new Security Code.");
+  }
+  cachedPinConfig = { fetchedAt: Date.now(), row: { id: 0, username: SECURITY_PIN_SYSTEM_USERNAME, password: hashed, role: "system_config" } };
+  return true;
+}
 function checkRateLimit(ip, maxAttempts = 10, windowMs = 60 * 1e3) {
   const now = Date.now();
   const entry = ipRateLimits.get(ip);
@@ -214,8 +367,8 @@ var cachedSupabaseClient = null;
 
 function getSupabaseServerClient() {
   if (cachedSupabaseClient) return cachedSupabaseClient;
-  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || DEFAULT_SUPABASE_URL;
-  const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || DEFAULT_SUPABASE_KEY;
+  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_KEY;
   if (!supabaseUrl || !supabaseKey) {
     throw new Error("Supabase URL and Key are required.");
   }
@@ -1037,9 +1190,11 @@ async function deleteInquiry(id) {
 async function authenticateStaff(username, password) {
   const cleanUser = stripHtml(username || "").trim();
   const cleanPass = (password || "").trim();
-  if (!cleanUser || !cleanPass) {
+  if (!cleanUser || !cleanPass || cleanUser.startsWith("__")) {
     return null;
   }
+  const lowerUser = cleanUser.toLowerCase();
+  const secCfg = readLocalSecurityConfig();
 
   const sb = getSupabaseServerClient();
   const { data: userRow, error } = await sb
@@ -1050,21 +1205,35 @@ async function authenticateStaff(username, password) {
 
   if (error) {
     console.warn("[Supabase Auth Lookup]:", error.message);
-    return null;
   }
-  if (!userRow) {
+
+  // Check local custom staff or Supabase row
+  let targetAccount = null;
+  if (userRow && userRow.role !== "system_config" && !String(userRow.username || "").startsWith("__")) {
+    if (!secCfg.deletedStaffIds.includes(Number(userRow.id))) {
+      targetAccount = { id: Number(userRow.id), username: String(userRow.username), password: String(userRow.password || ""), role: String(userRow.role || "staff") };
+    }
+  }
+  if (!targetAccount) {
+    const customMatch = secCfg.customStaff.find((u) => String(u.username || "").toLowerCase() === lowerUser);
+    if (customMatch) {
+      targetAccount = { id: Number(customMatch.id), username: String(customMatch.username), password: String(customMatch.passwordHash || ""), role: String(customMatch.role || "staff") };
+    }
+  }
+  if (!targetAccount) {
     return null;
   }
 
-  const isPasswordValid = await comparePassword(cleanPass, String(userRow.password || ""));
+  const effectivePassOrHash = secCfg.passwordOverrides[lowerUser] || targetAccount.password;
+  const isPasswordValid = await comparePassword(cleanPass, String(effectivePassOrHash || ""));
   if (!isPasswordValid) {
     return null;
   }
 
   return {
-    id: Number(userRow.id),
-    username: String(userRow.username),
-    role: String(userRow.role || "staff")
+    id: targetAccount.id,
+    username: targetAccount.username,
+    role: targetAccount.role
   };
 }
 
@@ -1179,9 +1348,9 @@ async function findMemberForCheckIn(rawId) {
 }
 
 // Express Application
-async function startServer() {
+async function createApp(options = {}) {
+  const { skipStartupCheck = false, serverless = IS_SERVERLESS } = options;
   const app = (0, import_express.default)();
-  const PORT = 3000;
 
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -1193,16 +1362,18 @@ async function startServer() {
   app.use(import_express.default.json({ limit: "25mb" }));
   app.use(import_express.default.urlencoded({ extended: true, limit: "25mb" }));
 
-  try {
-    const sb = getSupabaseServerClient();
-    const { count, error } = await sb.from("members").select("*", { count: "exact", head: true });
-    if (error) {
-      console.warn("[NFT Gym] Supabase startup check warning:", error.message);
-    } else {
-      console.log(`[NFT Gym] Pure Supabase Mode active (${count} live members connected).`);
+  if (!skipStartupCheck) {
+    try {
+      const sb = getSupabaseServerClient();
+      const { count, error } = await sb.from("members").select("*", { count: "exact", head: true });
+      if (error) {
+        console.warn("[NFT Gym] Supabase startup check warning:", error.message);
+      } else {
+        console.log(`[NFT Gym] Pure Supabase Mode active (${count} live members connected).`);
+      }
+    } catch (err) {
+      console.error("[NFT Gym] Supabase client initialization error:", err);
     }
-  } catch (err) {
-    console.error("[NFT Gym] Supabase client initialization error:", err);
   }
 
   function requireAuth(req, res, next) {
@@ -1234,7 +1405,7 @@ async function startServer() {
     res.json({ status: "ok", brand: "NFT GYM", tagline: "BE AN INSPIRATION", database: "supabase" });
   });
 
-  function verifyAdminPinAuth(req) {
+  async function verifyAdminPinAuth(req) {
     const pinToken = String(req.headers["x-admin-pin-token"] || "").trim();
     if (pinToken) {
       try {
@@ -1242,12 +1413,19 @@ async function startServer() {
         if (decoded && decoded.pinVerified) return true;
       } catch {}
     }
-    const rawPin = String(req.headers["x-admin-pin"] || req.body?.admin_pin || "").trim();
-    if (rawPin && rawPin === ADMIN_SECURITY_PIN) return true;
+    const rawPin = String(req.headers["x-admin-pin"] || req.body?.admin_pin || req.body?.pin || "").trim();
+    if (rawPin && await verifyStoredSecurityPin(rawPin)) return true;
     return false;
   }
 
-  app.post("/api/security/verify-pin", requireAuth, (req, res) => {
+  function requireAdminRole(req, res, next) {
+    if (!req.user || String(req.user.role || "").toLowerCase() !== "admin") {
+      return res.status(403).json({ error: "Admin role privileges are required for this action." });
+    }
+    next();
+  }
+
+  app.post("/api/security/verify-pin", requireAuth, async (req, res) => {
     const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
     if (!checkRateLimit(`pin_${clientIp}`, 20, 60 * 1e3)) {
       return res.status(429).json({ valid: false, error: "Too many authorization attempts. Please wait 1 minute." });
@@ -1256,11 +1434,253 @@ async function startServer() {
     if (!pin) {
       return res.status(400).json({ valid: false, error: "Security code is required." });
     }
-    if (pin !== ADMIN_SECURITY_PIN) {
+    const isValid = await verifyStoredSecurityPin(pin);
+    if (!isValid) {
       return res.status(403).json({ valid: false, error: "Incorrect security code. Authorization failed." });
     }
     const pinToken = import_jsonwebtoken.default.sign({ pinVerified: true, by: req.user?.username || "admin" }, JWT_SECRET, { expiresIn: "15m" });
     return res.json({ valid: true, pinToken });
+  });
+
+  app.get("/api/admin/staff", requireAuth, requireAdminRole, async (req, res) => {
+    try {
+      const sb = getSupabaseServerClient();
+      const { data, error } = await sb
+        .from("staff_users")
+        .select("id, username, role, created_at")
+        .order("id", { ascending: true });
+      if (error) throw new Error(error.message);
+      const secCfg = readLocalSecurityConfig();
+      const rows = data || [];
+      const hasCustomPinInDb = Boolean(secCfg.pinHash) || rows.some((r) => r.username === SECURITY_PIN_SYSTEM_USERNAME || r.role === "system_config");
+      const dbStaff = rows
+        .filter((r) => r.role !== "system_config" && !String(r.username || "").startsWith("__") && !secCfg.deletedStaffIds.includes(Number(r.id)))
+        .map((r) => ({ id: Number(r.id), username: r.username, role: r.role, created_at: r.created_at }));
+      const seenNames = new Set(dbStaff.map((s) => String(s.username || "").toLowerCase()));
+      const customStaffClean = secCfg.customStaff
+        .filter((u) => !seenNames.has(String(u.username || "").toLowerCase()))
+        .map((u) => ({ id: Number(u.id), username: u.username, role: u.role, created_at: u.created_at }));
+      res.json({ staff: [...dbStaff, ...customStaffClean], hasCustomPinInDb });
+    } catch (err) {
+      console.error("Failed fetching staff list:", err);
+      res.status(500).json({ error: "Failed to load staff users." });
+    }
+  });
+
+  app.post("/api/admin/change-password", requireAuth, async (req, res) => {
+    try {
+      const { current_password, new_password, target_username } = req.body || {};
+      const newPass = String(new_password || "").trim();
+      if (newPass.length < 6) {
+        return res.status(400).json({ error: "New password must be at least 6 characters long." });
+      }
+      const actorUsername = String(req.user?.username || "").trim();
+      const isAdmin = String(req.user?.role || "").toLowerCase() === "admin";
+      const targetUser = stripHtml(String(target_username || actorUsername)).trim();
+      if (!targetUser || targetUser.startsWith("__")) {
+        return res.status(400).json({ error: "Invalid target username." });
+      }
+      const lowerTarget = targetUser.toLowerCase();
+      const sb = getSupabaseServerClient();
+      const secCfg = readLocalSecurityConfig();
+      const isResettingOther = lowerTarget !== actorUsername.toLowerCase();
+      if (isResettingOther) {
+        if (!isAdmin) {
+          return res.status(403).json({ error: "Only administrators can reset another staff user's password." });
+        }
+        const pinOk = await verifyAdminPinAuth(req);
+        if (!pinOk) {
+          return res.status(403).json({ error: "Valid Admin Security Code is required to reset staff password." });
+        }
+      } else {
+        const curPass = String(current_password || "").trim();
+        if (!curPass) {
+          return res.status(400).json({ error: "Current password is required." });
+        }
+        const selfAuth = await authenticateStaff(actorUsername, curPass);
+        if (!selfAuth) {
+          return res.status(403).json({ error: "Current password is incorrect." });
+        }
+      }
+
+      const hashed = hashPasswordSync(newPass);
+      const { data: targetRow } = await sb
+        .from("staff_users")
+        .select("id, username, role")
+        .ilike("username", targetUser)
+        .maybeSingle();
+      const customIdx = secCfg.customStaff.findIndex((u) => String(u.username || "").toLowerCase() === lowerTarget);
+
+      if (targetRow && targetRow.role !== "system_config" && !secCfg.deletedStaffIds.includes(Number(targetRow.id))) {
+        const { data: upRows, error: upErr } = await sb
+          .from("staff_users")
+          .update({ password: hashed })
+          .eq("id", targetRow.id)
+          .select("id");
+        if (!upErr && Array.isArray(upRows) && upRows.length > 0) {
+          if (secCfg.passwordOverrides[lowerTarget]) {
+            delete secCfg.passwordOverrides[lowerTarget];
+            writeLocalSecurityConfig(secCfg);
+          }
+        } else if (IS_SERVERLESS) {
+          throw new Error(
+            process.env.SUPABASE_SERVICE_ROLE_KEY
+              ? `Failed saving password to Supabase (${upErr?.message || "RLS blocked update"}).`
+              : "SUPABASE_SERVICE_ROLE_KEY is required in Netlify Environment Variables to update passwords in Supabase."
+          );
+        } else {
+          // RLS blocked anonymous update on staff_users — store bcrypt hash securely in local server config
+          secCfg.passwordOverrides[lowerTarget] = hashed;
+          if (!writeLocalSecurityConfig(secCfg)) {
+            throw new Error("Unable to persist updated password.");
+          }
+        }
+        return res.json({ success: true, message: `Password updated for "${targetRow.username}".` });
+      } else if (customIdx !== -1) {
+        secCfg.customStaff[customIdx].passwordHash = hashed;
+        secCfg.passwordOverrides[lowerTarget] = hashed;
+        writeLocalSecurityConfig(secCfg);
+        return res.json({ success: true, message: `Password updated for "${secCfg.customStaff[customIdx].username}".` });
+      }
+      return res.status(404).json({ error: `Staff user "${targetUser}" not found.` });
+    } catch (err) {
+      console.error("Failed changing password:", err);
+      res.status(err.statusCode || 500).json({ error: err.message || "Failed to update password." });
+    }
+  });
+
+  app.post("/api/admin/change-security-pin", requireAuth, requireAdminRole, async (req, res) => {
+    try {
+      const { current_pin, new_pin } = req.body || {};
+      const curPin = String(current_pin || "").trim();
+      const nextPin = String(new_pin || "").trim();
+      if (!curPin) {
+        return res.status(400).json({ error: "Current Security Code is required." });
+      }
+      if (nextPin.length < 4) {
+        return res.status(400).json({ error: "New Security Code must be at least 4 characters long." });
+      }
+      const valid = await verifyStoredSecurityPin(curPin);
+      if (!valid) {
+        return res.status(403).json({ error: "Current Security Code is incorrect." });
+      }
+      await updateStoredSecurityPin(nextPin);
+      const pinToken = import_jsonwebtoken.default.sign({ pinVerified: true, by: req.user?.username || "admin" }, JWT_SECRET, { expiresIn: "15m" });
+      res.json({ success: true, pinToken, message: "Admin Security Code updated successfully." });
+    } catch (err) {
+      console.error("Failed updating security PIN:", err);
+      res.status(err.statusCode || 500).json({ error: err.message || "Failed to update Security Code." });
+    }
+  });
+
+  app.post("/api/admin/staff", requireAuth, requireAdminRole, async (req, res) => {
+    try {
+      const { username, password, role } = req.body || {};
+      const pinOk = await verifyAdminPinAuth(req);
+      if (!pinOk) {
+        return res.status(403).json({ error: "Valid Admin Security Code is required to add a staff user." });
+      }
+      const cleanUser = stripHtml(String(username || "")).trim();
+      const cleanPass = String(password || "").trim();
+      const cleanRole = ["admin", "manager", "staff"].includes(String(role || "").toLowerCase()) ? String(role).toLowerCase() : "staff";
+      if (!cleanUser || cleanUser.length < 3 || cleanUser.length > 40 || !/^[a-zA-Z0-9_.-]+$/.test(cleanUser) || cleanUser.startsWith("__")) {
+        return res.status(400).json({ error: "Username must be 3–40 characters (letters, numbers, ., _, -)." });
+      }
+      if (cleanPass.length < 6) {
+        return res.status(400).json({ error: "Password must be at least 6 characters long." });
+      }
+      const lowerUser = cleanUser.toLowerCase();
+      const sb = getSupabaseServerClient();
+      const secCfg = readLocalSecurityConfig();
+      const { data: existing } = await sb.from("staff_users").select("id").ilike("username", cleanUser).maybeSingle();
+      if ((existing && !secCfg.deletedStaffIds.includes(Number(existing.id))) || secCfg.customStaff.some((u) => String(u.username || "").toLowerCase() === lowerUser)) {
+        return res.status(409).json({ error: `Username "${cleanUser}" already exists.` });
+      }
+      const hashed = hashPasswordSync(cleanPass);
+      const { data: inserted, error } = await sb
+        .from("staff_users")
+        .insert([{ username: cleanUser, password: hashed, role: cleanRole }])
+        .select("id, username, role, created_at")
+        .single();
+      if (!error && inserted) {
+        return res.status(201).json({ success: true, user: inserted });
+      }
+      if (IS_SERVERLESS) {
+        throw new Error(
+          process.env.SUPABASE_SERVICE_ROLE_KEY
+            ? `Failed creating staff user in Supabase (${error?.message || "RLS blocked insert"}).`
+            : "SUPABASE_SERVICE_ROLE_KEY is required in Netlify Environment Variables to add staff accounts in Supabase."
+        );
+      }
+      // RLS fallback: store new staff user cleanly in local server security config
+      const localUser = { id: Date.now(), username: cleanUser, passwordHash: hashed, role: cleanRole, created_at: new Date().toISOString() };
+      secCfg.customStaff.push(localUser);
+      if (!writeLocalSecurityConfig(secCfg)) {
+        throw new Error("Unable to persist new staff user.");
+      }
+      res.status(201).json({ success: true, user: { id: localUser.id, username: localUser.username, role: localUser.role, created_at: localUser.created_at } });
+    } catch (err) {
+      console.error("Failed creating staff user:", err);
+      res.status(err.statusCode || 500).json({ error: err.message || "Failed to create staff account." });
+    }
+  });
+
+  app.delete("/api/admin/staff/:id", requireAuth, requireAdminRole, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id) || id <= 0) {
+        return res.status(400).json({ error: "Invalid staff user ID." });
+      }
+      const pinOk = await verifyAdminPinAuth(req);
+      if (!pinOk) {
+        return res.status(403).json({ error: "Valid Admin Security Code is required to delete a staff user." });
+      }
+      const sb = getSupabaseServerClient();
+      const secCfg = readLocalSecurityConfig();
+      const customIdx = secCfg.customStaff.findIndex((u) => Number(u.id) === id);
+      if (customIdx !== -1) {
+        const target = secCfg.customStaff[customIdx];
+        if (String(target.username).toLowerCase() === String(req.user?.username || "").toLowerCase()) {
+          return res.status(400).json({ error: "You cannot delete your own currently logged-in account." });
+        }
+        secCfg.customStaff.splice(customIdx, 1);
+        delete secCfg.passwordOverrides[String(target.username || "").toLowerCase()];
+        writeLocalSecurityConfig(secCfg);
+        return res.json({ success: true, id });
+      }
+      const { data: target, error: tErr } = await sb.from("staff_users").select("id, username, role").eq("id", id).maybeSingle();
+      if (tErr || !target || target.role === "system_config" || String(target.username || "").startsWith("__") || secCfg.deletedStaffIds.includes(id)) {
+        return res.status(404).json({ error: "Staff user not found." });
+      }
+      if (String(target.username).toLowerCase() === String(req.user?.username || "").toLowerCase()) {
+        return res.status(400).json({ error: "You cannot delete your own currently logged-in account." });
+      }
+      if (String(target.role).toLowerCase() === "admin") {
+        const { data: admins } = await sb.from("staff_users").select("id").eq("role", "admin");
+        const activeAdmins = (admins || []).filter((a) => !secCfg.deletedStaffIds.includes(Number(a.id)));
+        const customAdmins = secCfg.customStaff.filter((u) => String(u.role) === "admin");
+        if (activeAdmins.length + customAdmins.length <= 1) {
+          return res.status(400).json({ error: "Cannot delete the last remaining admin account." });
+        }
+      }
+      const { data: delRows, error: delErr } = await sb.from("staff_users").delete().eq("id", id).select("id");
+      if (delErr || !Array.isArray(delRows) || delRows.length === 0) {
+        if (IS_SERVERLESS) {
+          throw new Error(
+            process.env.SUPABASE_SERVICE_ROLE_KEY
+              ? `Failed deleting staff user in Supabase (${delErr?.message || "RLS blocked delete"}).`
+              : "SUPABASE_SERVICE_ROLE_KEY is required in Netlify Environment Variables to delete staff accounts in Supabase."
+          );
+        }
+        if (!secCfg.deletedStaffIds.includes(id)) secCfg.deletedStaffIds.push(id);
+        delete secCfg.passwordOverrides[String(target.username || "").toLowerCase()];
+        writeLocalSecurityConfig(secCfg);
+      }
+      res.json({ success: true, id });
+    } catch (err) {
+      console.error("Failed deleting staff user:", err);
+      res.status(err.statusCode || 500).json({ error: err.message || "Failed to delete staff user." });
+    }
   });
 
   app.post("/api/login", async (req, res) => {
@@ -1513,7 +1933,7 @@ async function startServer() {
       }
       const updateData = { ...(req.body || {}) };
       const sensitiveKeys = ["amount", "registration_fee", "discount", "tax", "final_amount", "paid_amount", "remaining_amount", "plan_type", "expiry_date", "is_renewal"];
-      if (sensitiveKeys.some((k) => updateData[k] !== void 0) && !verifyAdminPinAuth(req)) {
+      if (sensitiveKeys.some((k) => updateData[k] !== void 0) && !(await verifyAdminPinAuth(req))) {
         return res.status(403).json({ error: "Admin security code authorization is required for billing or plan modifications." });
       }
       if (updateData.mobile && typeof updateData.mobile === "string") {
@@ -1553,7 +1973,7 @@ async function startServer() {
       if (isNaN(id) || id <= 0) {
         return res.status(400).json({ error: "Invalid member ID" });
       }
-      if (!verifyAdminPinAuth(req)) {
+      if (!(await verifyAdminPinAuth(req))) {
         return res.status(403).json({ error: "Admin security code authorization is required to delete a member." });
       }
       const deleted = await deleteMember(id);
@@ -1574,7 +1994,7 @@ async function startServer() {
       if (isNaN(id) || id <= 0 || !plan_type) {
         return res.status(400).json({ error: "Invalid ID or plan_type" });
       }
-      if (!verifyAdminPinAuth(req)) {
+      if (!(await verifyAdminPinAuth(req))) {
         return res.status(403).json({ error: "Admin security code authorization is required to renew membership." });
       }
       const updated = await renewMember(
@@ -1664,7 +2084,7 @@ async function startServer() {
       }
       const { start_date, end_date, start_iso, end_iso, confirmation, pin, security_code } = req.body || {};
       const providedPin = String(pin || security_code || "").trim();
-      if (!providedPin || providedPin !== ADMIN_SECURITY_PIN) {
+      if (!providedPin || !(await verifyStoredSecurityPin(providedPin))) {
         return res.status(403).json({ error: "Invalid Admin Security Code. Attendance deletion denied." });
       }
       if (confirmation !== "DELETE") {
@@ -1955,27 +2375,39 @@ async function startServer() {
     }
   });
 
-  const staticPath = import_fs.default.existsSync(import_path.default.join(process.cwd(), "dist", "index.html"))
-    ? import_path.default.join(process.cwd(), "dist")
-    : process.cwd();
-  app.use(import_express.default.static(staticPath));
-  if (staticPath !== process.cwd()) {
-    app.use(import_express.default.static(process.cwd()));
+  if (!serverless) {
+    const staticPath = import_fs.default.existsSync(import_path.default.join(process.cwd(), "dist", "index.html"))
+      ? import_path.default.join(process.cwd(), "dist")
+      : process.cwd();
+    app.use(import_express.default.static(staticPath));
+    if (staticPath !== process.cwd()) {
+      app.use(import_express.default.static(process.cwd()));
+    }
+    app.get("/crm", (req, res) => {
+      res.sendFile(import_path.default.join(staticPath, "crm.html"));
+    });
+    app.get("/crm.html", (req, res) => {
+      res.sendFile(import_path.default.join(staticPath, "crm.html"));
+    });
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/")) return next();
+      res.sendFile(import_path.default.join(staticPath, "index.html"));
+    });
   }
-  app.get("/crm", (req, res) => {
-    res.sendFile(import_path.default.join(staticPath, "crm.html"));
-  });
-  app.get("/crm.html", (req, res) => {
-    res.sendFile(import_path.default.join(staticPath, "crm.html"));
-  });
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api/")) return next();
-    res.sendFile(import_path.default.join(staticPath, "index.html"));
-  });
 
+  return app;
+}
+
+async function startServer() {
+  const PORT = process.env.PORT || 3000;
+  const app = await createApp({ skipStartupCheck: false, serverless: false });
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[NFT Gym] Server running on http://0.0.0.0:${PORT} (Pure Supabase Mode)`);
   });
 }
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { createApp, startServer };
