@@ -365,10 +365,31 @@ var DEFAULT_SUPABASE_URL = "https://kkhnpgztzfpmjltsuhmo.supabase.co";
 var DEFAULT_SUPABASE_KEY = "sb_publishable_ZEh4rJnXI_uEnWYHp7YGHA_st4b9kwU";
 var cachedSupabaseClient = null;
 
+function sanitizeEnvUrl(raw) {
+  let u = String(raw || "").trim().replace(/^["']|["']$/g, "");
+  if (!u) return DEFAULT_SUPABASE_URL;
+  if (!/^https?:\/\//i.test(u) && /^[a-z0-9.-]+\.[a-z]{2,}/i.test(u)) {
+    u = "https://" + u;
+  }
+  try {
+    const parsed = new URL(u);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+      return u.replace(/\/+$/, "");
+    }
+  } catch {}
+  console.warn("[NFT Gym] Invalid SUPABASE_URL env format detected; falling back to default Supabase URL.");
+  return DEFAULT_SUPABASE_URL;
+}
+
+function sanitizeEnvKey(raw) {
+  return String(raw || "").trim().replace(/^["']|["']$/g, "").replace(/[\r\n\s]+/g, "");
+}
+
 function getSupabaseServerClient() {
   if (cachedSupabaseClient) return cachedSupabaseClient;
-  const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_KEY;
+  const supabaseUrl = sanitizeEnvUrl(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL);
+  const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_KEY;
+  const supabaseKey = sanitizeEnvKey(rawKey) || DEFAULT_SUPABASE_KEY;
   if (!supabaseUrl || !supabaseKey) {
     throw new Error("Supabase URL and Key are required.");
   }
@@ -1401,8 +1422,52 @@ async function createApp(options = {}) {
     next();
   }
 
-  app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", brand: "NFT GYM", tagline: "BE AN INSPIRATION", database: "supabase" });
+  app.get("/api/health", async (req, res) => {
+    const base = { status: "ok", brand: "NFT GYM", tagline: "BE AN INSPIRATION", database: "supabase" };
+    if (req.query.deep !== "1") {
+      return res.json(base);
+    }
+    const rawUrl = String(process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "").trim();
+    const svcKey = sanitizeEnvKey(process.env.SUPABASE_SERVICE_ROLE_KEY || "");
+    const activeKey = sanitizeEnvKey(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY || process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_KEY);
+    let urlHost = "default";
+    try { urlHost = new URL(sanitizeEnvUrl(rawUrl || DEFAULT_SUPABASE_URL)).host; } catch {}
+    const keyFormat = !activeKey ? "missing" : activeKey.startsWith("sb_secret_") ? "sb_secret" : activeKey.startsWith("sb_publishable_") ? "sb_publishable" : activeKey.startsWith("eyJ") ? "jwt" : "other";
+    let supabasePing = "unknown";
+    let supabaseError = null;
+    try {
+      const sb = getSupabaseServerClient();
+      const { error, count } = await sb.from("staff_users").select("id", { count: "exact", head: true });
+      if (error) {
+        supabasePing = "error";
+        supabaseError = error.message;
+      } else {
+        supabasePing = "ok";
+      }
+      return res.json({
+        ...base,
+        serverless: IS_SERVERLESS,
+        urlHost,
+        rawUrlValid: !rawUrl || /^https?:\/\/[a-z0-9.-]+/i.test(rawUrl.replace(/^["']|["']$/g, "")),
+        hasServiceRoleKey: Boolean(svcKey),
+        hasJwtSecret: Boolean(process.env.JWT_SECRET),
+        keyFormat,
+        supabasePing,
+        supabaseError,
+        staffCount: count ?? null
+      });
+    } catch (e) {
+      return res.json({
+        ...base,
+        serverless: IS_SERVERLESS,
+        urlHost,
+        hasServiceRoleKey: Boolean(svcKey),
+        hasJwtSecret: Boolean(process.env.JWT_SECRET),
+        keyFormat,
+        supabasePing: "exception",
+        supabaseError: e && e.message ? e.message : String(e)
+      });
+    }
   });
 
   async function verifyAdminPinAuth(req) {
@@ -1426,7 +1491,7 @@ async function createApp(options = {}) {
   }
 
   app.post("/api/security/verify-pin", requireAuth, async (req, res) => {
-    const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    const clientIp = req.headers["x-forwarded-for"] || (req.socket && req.socket.remoteAddress) || "unknown";
     if (!checkRateLimit(`pin_${clientIp}`, 20, 60 * 1e3)) {
       return res.status(429).json({ valid: false, error: "Too many authorization attempts. Please wait 1 minute." });
     }
@@ -1685,7 +1750,7 @@ async function createApp(options = {}) {
 
   app.post("/api/login", async (req, res) => {
     try {
-      const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+      const clientIp = req.headers["x-forwarded-for"] || (req.socket && req.socket.remoteAddress) || "unknown";
       if (!checkRateLimit(`login_${clientIp}`, 10, 60 * 1e3)) {
         return res.status(429).json({ error: "Too many login attempts. Please wait 1 minute before trying again." });
       }
@@ -1741,7 +1806,7 @@ async function createApp(options = {}) {
       if (!username || !session_id) {
         return res.status(400).json({ error: "Username and session_id are required." });
       }
-      const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+      const clientIp = req.headers["x-forwarded-for"] || (req.socket && req.socket.remoteAddress) || "unknown";
       const result = await registerDbUserSession(
         String(username),
         String(session_id),
@@ -2078,7 +2143,7 @@ async function createApp(options = {}) {
 
   app.post("/api/attendance/delete-range", requireAuth, async (req, res) => {
     try {
-      const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+      const clientIp = req.headers["x-forwarded-for"] || (req.socket && req.socket.remoteAddress) || "unknown";
       if (!checkRateLimit(`delatt_${clientIp}`, 20, 60 * 1e3)) {
         return res.status(429).json({ error: "Too many delete attempts. Please wait 1 minute." });
       }
@@ -2317,7 +2382,7 @@ async function createApp(options = {}) {
 
   app.post("/api/inquiries", async (req, res) => {
     try {
-      const clientIp = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+      const clientIp = req.headers["x-forwarded-for"] || (req.socket && req.socket.remoteAddress) || "unknown";
       if (!checkRateLimit(`inq_${clientIp}`, 6, 60 * 1e3)) {
         return res.status(429).json({ error: "Too many inquiries submitted. Please wait 1 minute before trying again." });
       }
