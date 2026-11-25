@@ -259,10 +259,11 @@
     </div>
 
     <!-- Client-side script -->
+    <script>
       // Attendance Logic
       let currentMembers = [];
       let isMuted = true;
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
       function playTone(type) {
         if (isMuted) return;
@@ -297,9 +298,28 @@
         document.getElementById('mute-btn').innerText = isMuted ? 'Unmute Audio' : 'Mute Audio';
       }
 
+      function getTodayIST() {
+        return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      }
+      const today = getTodayIST();
+
+      function getAuthToken() {
+        try {
+          return sessionStorage.getItem('nft_gym_token') || localStorage.getItem('nft_gym_token') || localStorage.getItem('token') || '';
+        } catch (_) { return ''; }
+      }
+
+      function authHeaders(extra = {}) {
+        const t = getAuthToken();
+        return { ...extra, ...(t ? { 'Authorization': 'Bearer ' + t } : {}) };
+      }
+
       let scannerBuffer = '';
       let lastScan = 0;
       window.addEventListener('keydown', e => {
+        const target = e.target;
+        const tag = target && target.tagName ? target.tagName.toUpperCase() : '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
         const now = Date.now();
         if (now - lastScan > 3000) scannerBuffer = '';
         lastScan = now;
@@ -359,27 +379,40 @@
       async function loadAttendance() {
         console.log("Loading attendance...");
         let data = [];
+        let loadedFromExpress = false;
+        let authRequired = false;
+        const todayStr = getTodayIST();
+        const sIso = new Date(`${todayStr}T00:00:00.000+05:30`).toISOString();
+        const eIso = new Date(`${todayStr}T23:59:59.999+05:30`).toISOString();
         try {
-          const res = await fetch('/api/attendance');
-          if (res.ok) {
+          const res = await fetch(`/api/attendance?start_iso=${encodeURIComponent(sIso)}&end_iso=${encodeURIComponent(eIso)}&start_date=${todayStr}&end_date=${todayStr}`, {
+            headers: authHeaders()
+          });
+          if (res.status === 401) {
+            authRequired = true;
+          } else if (res.ok) {
             const text = await res.text();
             if (text && !text.trim().startsWith("<")) {
               data = JSON.parse(text);
+              loadedFromExpress = true;
             }
           }
         } catch(e) {
           console.warn("Express /api/attendance error:", e);
         }
 
-        // Direct Supabase fallback (Netlify / static hosting)
-        if (!Array.isArray(data) || data.length === 0) {
+        if (authRequired) {
+          const msgEl = document.getElementById('attendance-msg');
+          if (msgEl) {
+            msgEl.classList.remove('hidden', 'bg-green-100', 'bg-red-100');
+            msgEl.classList.add('bg-amber-100', 'text-amber-800');
+            msgEl.innerText = 'Admin login required to view attendance logs. Click "Admin Login" above to sign in.';
+          }
+        }
+
+        // Direct Supabase fallback (only for static hosting when Express is unavailable)
+        if (!loadedFromExpress && !authRequired) {
           try {
-            const todayParts = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
-            const y = todayParts.find(p => p.type === 'year').value;
-            const m = todayParts.find(p => p.type === 'month').value;
-            const d = todayParts.find(p => p.type === 'day').value;
-            const sIso = new Date(`${y}-${m}-${d}T00:00:00+05:30`).toISOString();
-            const eIso = new Date(`${y}-${m}-${d}T23:59:59.999+05:30`).toISOString();
             const sbRes = await fetch(`${SB_URL}/rest/v1/attendance?select=id,member_id,check_in_time,status,reception_notes,members(id,member_id,name,mobile)&check_in_time=gte.${encodeURIComponent(sIso)}&check_in_time=lte.${encodeURIComponent(eIso)}&order=check_in_time.desc`, {
               headers: SB_HEADERS
             });
@@ -387,7 +420,7 @@
               const raw = await sbRes.json();
               if (Array.isArray(raw)) {
                 data = raw.map(a => {
-                  const mObj = a.members || (currentMembers || []).find(x => x.id === a.member_id || String(x.member_id) === String(a.member_id));
+                  const mObj = a.members || (currentMembers || []).find(x => String(x.member_id) === String(a.member_id)) || (currentMembers || []).find(x => String(x.id) === String(a.member_id));
                   return {
                     ...a,
                     name: mObj ? mObj.name : `Member #${a.member_id}`,
@@ -409,7 +442,7 @@
               try {
                 let s = String(a.check_in_time).trim();
                 if (s.includes(" ") && !s.includes("T")) s = s.replace(" ", "T");
-                if (!s.endsWith("Z") && !/[+-]\d{2}(:?\d{2})?$/.test(s)) s += "Z";
+                if (!/[Zz]$/.test(s) && !/[+-]\d{2}(:?\d{2})?$/.test(s)) s += "+05:30";
                 const dObj = new Date(s);
                 const parts = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: '2-digit', year: 'numeric' }).formatToParts(dObj);
                 const dd = parts.find(p => p.type === 'day')?.value || '01';
@@ -476,6 +509,8 @@
         const dd = String(d.getDate()).padStart(2, '0');
         document.getElementById('calc-expiry-preview').innerText = `${dd}-${mm}-${yyyy}`;
       }
+      const regStartInput = document.getElementById('reg-start-date');
+      if (regStartInput && !regStartInput.value) regStartInput.value = getTodayIST();
       updateCalculatedExpiry();
 
       function switchView(view) {
@@ -495,7 +530,7 @@
           let loaded = false;
 
           try {
-            const res = await fetch(`/api/members?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`);
+            const res = await fetch(`/api/members?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}`, { headers: authHeaders() });
             if (res.ok) {
               const text = await res.text();
               if (text && !text.trim().startsWith('<')) {
@@ -642,7 +677,7 @@
         try {
           const res = await fetch('/api/members', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ name, mobile, plan_type, start_date, address }),
           });
           if (res.ok) {
@@ -690,7 +725,7 @@
         if (saved) {
           alert(`Member ${createdMember?.name || name} enrolled successfully with expiry on ${formatToDMY(createdMember?.expiry_date || expiry_date)}!`);
           document.getElementById('registration-form').reset();
-          document.getElementById('reg-start-date').value = today;
+          document.getElementById('reg-start-date').value = getTodayIST();
           updateCalculatedExpiry();
           switchView('members');
           loadMembers();
@@ -701,12 +736,16 @@
 
       async function deleteMember(id) {
         if (!confirm('Are you sure you want to delete this member?')) return;
+        let deletedViaApi = false;
         try {
-          await fetch(`/api/members/${id}`, { method: 'DELETE' });
+          const r = await fetch(`/api/members/${id}`, { method: 'DELETE', headers: authHeaders() });
+          if (r.ok) deletedViaApi = true;
         } catch (_) {}
-        try {
-          await fetch(`${SB_URL}/rest/v1/members?id=eq.${id}`, { method: 'DELETE', headers: SB_HEADERS });
-        } catch (_) {}
+        if (!deletedViaApi && !getAuthToken()) {
+          try {
+            await fetch(`${SB_URL}/rest/v1/members?id=eq.${id}`, { method: 'DELETE', headers: SB_HEADERS });
+          } catch (_) {}
+        }
         loadMembers();
       }
 
