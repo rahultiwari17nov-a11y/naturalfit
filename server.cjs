@@ -684,10 +684,23 @@ async function insertMember(data) {
         date: cleanReceiptDate,
         amount: paidAmount,
         tax,
+        cycle_type: "current",
+        cycle_start: data.start_date || cleanReceiptDate,
         payment_mode: cleanPaymentMode,
         notes: isRenewalVal ? "Renewal Payment" : "Initial Registration Payment"
       }
     ]);
+  } else if (cleanPaymentHistory) {
+    try {
+      const parsedHist = JSON.parse(cleanPaymentHistory);
+      if (Array.isArray(parsedHist)) {
+        cleanPaymentHistory = JSON.stringify(parsedHist.map((e) => ({
+          ...e,
+          cycle_type: e.cycle_type || "current",
+          cycle_start: e.cycle_start || data.start_date || cleanReceiptDate
+        })));
+      }
+    } catch {}
   }
 
   const payload = {
@@ -836,7 +849,31 @@ async function updateMember(id, data) {
   const updatedPaymentMode = data.payment_mode !== void 0 ? stripHtml(String(data.payment_mode)).trim() : current.payment_mode || "Via Online";
 
   let updatedPaymentHistory = data.payment_history !== void 0 ? data.payment_history : current.payment_history || "";
-  if (data.paid_amount !== void 0 && data.payment_history === void 0) {
+  if (data.payment_history !== void 0) {
+    try {
+      const parsedPh = Array.isArray(updatedPaymentHistory) ? updatedPaymentHistory : JSON.parse(String(updatedPaymentHistory || "[]"));
+      if (Array.isArray(parsedPh)) {
+        const taggedPh = parsedPh.map((e) => ({
+          ...e,
+          cycle_type: e.cycle_type || "current",
+          cycle_start: e.cycle_start || (e.cycle_type === "previous" ? (e.date || newStartDate) : newStartDate)
+        }));
+        if (data.paid_amount !== void 0) {
+          const curCycleSum = taggedPh
+            .filter((e) => e.cycle_type !== "previous")
+            .reduce((s, e) => s + (Number(e && e.amount) || 0), 0);
+          if (Math.abs(curCycleSum - updatedPaidAmount) > 0.01) {
+            const err = new Error(`Payment ledger mismatch: current cycle payment entries total ₹${curCycleSum}, which must equal Paid Amount ₹${updatedPaidAmount}.`);
+            err.statusCode = 400;
+            throw err;
+          }
+        }
+        updatedPaymentHistory = JSON.stringify(taggedPh);
+      }
+    } catch (phErr) {
+      if (phErr && phErr.statusCode === 400) throw phErr;
+    }
+  } else if (data.paid_amount !== void 0) {
     const delta = updatedPaidAmount - prevPaidAmount;
     if (Math.abs(delta) > 0.01) {
       let ph = [];
@@ -846,12 +883,19 @@ async function updateMember(id, data) {
           if (Array.isArray(parsed)) ph = parsed;
         } catch {}
       }
+      ph = ph.map((e) => ({
+        ...e,
+        cycle_type: e.cycle_type || "current",
+        cycle_start: e.cycle_start || (e.cycle_type === "previous" ? (e.date || newStartDate) : newStartDate)
+      }));
       if (ph.length === 0 && prevPaidAmount > 0) {
         ph.push({
           id: "pay-init-legacy",
           date: current.start_date || getISTDateString(new Date()),
           amount: prevPaidAmount,
           tax: Number(current.tax) || 0,
+          cycle_type: "current",
+          cycle_start: newStartDate,
           payment_mode: current.payment_mode || "Via Online",
           notes: current.is_renewal ? "Prior Renewal Payment" : "Initial Registration Payment"
         });
@@ -861,6 +905,8 @@ async function updateMember(id, data) {
         date: getISTDateString(new Date()),
         amount: delta,
         tax: 0,
+        cycle_type: "current",
+        cycle_start: newStartDate,
         payment_mode: updatedPaymentMode,
         notes: delta > 0
           ? `Payment / Edit Adjustment (+₹${delta})`
@@ -1064,9 +1110,17 @@ async function renewMember(id, planType, newStartDate, discount = 0, amount = nu
       date: current.start_date || todayStr,
       amount: Number(current.paid_amount) || 0,
       tax: Number(current.tax) || 0,
+      cycle_type: "previous",
+      cycle_start: current.start_date || todayStr,
       payment_mode: current.payment_mode || "Via Online",
       notes: current.is_renewal ? "Prior Renewal Payment" : "Initial Registration Payment"
     });
+  } else {
+    paymentHistory = paymentHistory.map((e) => ({
+      ...e,
+      cycle_type: "previous",
+      cycle_start: e.cycle_start || current.start_date || e.date || todayStr
+    }));
   }
   if (paidAmount > 0 || finalAmount === 0) {
     paymentHistory.push({
@@ -1082,6 +1136,8 @@ async function renewMember(id, planType, newStartDate, discount = 0, amount = nu
       previous_plan: current.plan_type,
       previous_expiry: current.expiry_date,
       receipt_date: effectiveReceiptDate,
+      cycle_type: "current",
+      cycle_start: startDate,
       payment_mode: paymentMode,
       notes: `Renewal for ${planType}${carriedDue > 0 ? ` (Incl. ₹${carriedDue} prev due)` : ""}${disc > 0 ? ` (₹${baseAmount} - ₹${disc} discount)` : ""}${remainingAmount > 0 ? ` [Part payment, Due: ₹${remainingAmount}]` : finalAmount === 0 ? " [100% Discount / Free]" : " [Fully Paid]"}`
     });
@@ -1872,6 +1928,97 @@ async function createApp(options = {}) {
     } catch (err) {
       console.error("Failed fetching members from Supabase:", err);
       res.status(500).json({ error: "Failed to retrieve members" });
+    }
+  });
+
+  app.get("/api/accounts/audit", requireAuth, async (req, res) => {
+    try {
+      const members = await getAllMembers("", "all");
+      let totalPlanAmount = 0, totalRegFee = 0, totalDiscount = 0, totalTax = 0;
+      let totalFinalAmount = 0, totalPaid = 0, totalRemainingDue = 0;
+      let totalCurrentCycleHistory = 0, totalLifetimeHistory = 0;
+      const discrepancies = [];
+
+      for (const m of members) {
+        const amt = Number(m.amount || 0);
+        const reg = m.is_renewal ? 0 : Number(m.registration_fee || 0);
+        const disc = Number(m.discount || 0);
+        const tax = Number(m.tax || 0);
+        const fin = Number(m.final_amount || 0);
+        const paid = Number(m.paid_amount || 0);
+        const rem = Number(m.remaining_amount || 0);
+
+        let ph = [];
+        if (m.payment_history) {
+          try {
+            const parsed = Array.isArray(m.payment_history) ? m.payment_history : JSON.parse(String(m.payment_history));
+            if (Array.isArray(parsed)) ph = parsed;
+          } catch {}
+        }
+        const lifetimeSum = ph.reduce((s, p) => s + (Number(p && p.amount) || 0), 0);
+        const hasCycleTag = ph.some((p) => p && (p.cycle_type === "current" || p.cycle_type === "previous"));
+        const currentSum = hasCycleTag
+          ? ph.filter((p) => p && p.cycle_type !== "previous").reduce((s, p) => s + (Number(p && p.amount) || 0), 0)
+          : lifetimeSum;
+
+        totalPlanAmount += amt;
+        totalRegFee += reg;
+        totalDiscount += disc;
+        totalTax += tax;
+        totalFinalAmount += fin;
+        totalPaid += paid;
+        totalRemainingDue += rem;
+        totalCurrentCycleHistory += currentSum;
+        totalLifetimeHistory += lifetimeSum;
+
+        const issues = [];
+        if (Math.max(0, amt + reg - disc + tax) !== fin && fin !== Math.max(0, amt + reg + (Number(m.previous_due_carried) || 0) - disc + tax)) {
+          // Check renewal carried due if any
+          let carriedDue = 0;
+          if (m.renewal_history) {
+            try {
+              const rh = Array.isArray(m.renewal_history) ? m.renewal_history : JSON.parse(String(m.renewal_history));
+              if (Array.isArray(rh) && rh[0]) carriedDue = Number(rh[0].previous_due_carried) || 0;
+            } catch {}
+          }
+          if (Math.max(0, amt + reg + carriedDue - disc + tax) !== fin) {
+            issues.push(`final_amount mismatch (${fin} vs expected ${Math.max(0, amt + reg + carriedDue - disc + tax)})`);
+          }
+        }
+        if (Math.abs(currentSum - paid) > 0.01) {
+          issues.push(`current history (₹${currentSum}) != paid_amount (₹${paid})`);
+        }
+        if (paid > fin) {
+          issues.push(`overpaid (₹${paid} > ₹${fin})`);
+        }
+        if (Math.max(0, fin - paid) !== rem) {
+          issues.push(`remaining_amount (${rem}) != final - paid (${Math.max(0, fin - paid)})`);
+        }
+        if (issues.length > 0) {
+          discrepancies.push({ id: m.id, member_id: m.member_id, name: m.name, issues });
+        }
+      }
+
+      res.json({
+        totalMembers: members.length,
+        isBalanced: discrepancies.length === 0,
+        discrepancyCount: discrepancies.length,
+        summary: {
+          totalPlanAmount,
+          totalRegFee,
+          totalDiscount,
+          totalTax,
+          totalFinalAmount,
+          totalPaid,
+          totalRemainingDue,
+          totalCurrentCycleHistory,
+          totalLifetimeHistory
+        },
+        discrepancies
+      });
+    } catch (err) {
+      console.error("Accounts audit error:", err);
+      res.status(500).json({ error: "Failed to run accounts audit" });
     }
   });
 

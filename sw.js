@@ -8,7 +8,7 @@
  *  - Lifecycle: self.skipWaiting() on install, clients.claim() on activate
  */
 
-const CACHE_VERSION = 'nft-erp-v1.0.7';
+const CACHE_VERSION = 'nft-erp-v1.0.8';
 const STATIC_CACHE = `static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `runtime-${CACHE_VERSION}`;
 
