@@ -353,7 +353,7 @@ function computeMemberStatus(expiryDateStr) {
   const days = Math.ceil(diffMs / (1e3 * 60 * 60 * 24));
   if (days < 0) {
     return { status: "expired", days_remaining: days };
-  } else if (days <= 30) {
+  } else if (days <= 7) {
     return { status: "expiring", days_remaining: days };
   } else {
     return { status: "active", days_remaining: days };
